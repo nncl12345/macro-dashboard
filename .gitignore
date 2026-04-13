@@ -1,7 +1,9 @@
 venv/
 .env
+.streamlit/secrets.toml
 __pycache__/
 *.pyc
 .DS_Store
 .ipynb_checkpoints/
 *.egg-info/
+data/cache/
