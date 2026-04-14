@@ -1,9 +1,13 @@
 # =============================================================================
 # regime/classifier.py
 #
-# The core brain of the dashboard. Takes three macro inputs and outputs one of
-# four regime labels. Everything else in the app (colours, charts, heatmap) is
-# driven by what this file returns.
+# The regime classification engine. Takes a dict of macro signals and outputs
+# one of four regime labels using a transparent scoring system.
+#
+# Three-layer framework (only Layer 1 is fully implemented):
+#   Layer 1 — Growth/Inflation Quadrant  ← implemented here
+#   Layer 2 — Monetary Policy Cycle      ← stubbed, to be added
+#   Layer 3 — RORO (Risk-on/Risk-off)    ← stubbed, to be added
 # =============================================================================
 
 from dataclasses import dataclass, field
@@ -11,153 +15,219 @@ from dataclasses import dataclass, field
 
 # -----------------------------------------------------------------------------
 # THRESHOLDS
-# These are the decision boundaries for the classifier. Kept in one dict so
-# they're easy to find and adjust without digging through logic code.
+# All decision boundaries in one dict. Changing a threshold here affects
+# the classifier without touching any logic code.
 #
-# cpi_mom_hot    — CPI month-on-month % change. Above 0.3% is considered "hot"
-#                  inflation (roughly 3.6% annualised). Below = "cool".
-# pmi_expansion  — PMI (Purchasing Managers' Index) is a survey of business
-#                  activity. 50 is the neutral line: above = economy expanding,
-#                  below = contracting. This is the industry-standard threshold.
-# spread_2s10s_warn — The 2s10s spread is the 10yr Treasury yield minus the 2yr.
-#                  When it goes negative (inverted), it historically signals a
-#                  recession is coming. We use 0 as the warning line.
-# pmi_borderline — A "grey zone" around PMI 50 (48–52) where the reading is
-#                  ambiguous. If PMI is in this band AND the yield curve is
-#                  inverted, we treat growth as weak rather than strong.
+# growth_score_min     — need at least this many growth signals firing to
+#                        classify growth as "accelerating" (out of 4 signals)
+# inflation_score_min  — same for inflation signals (out of 4 signals)
+# pmi_expansion        — PMI proxy above this = growth is expanding
+# michigan_hot         — Michigan 1Y inflation expectations above this = hot
 # -----------------------------------------------------------------------------
 THRESHOLDS: dict[str, float] = {
-    "cpi_mom_hot":        0.3,
-    "pmi_expansion":      50.0,
-    "spread_2s10s_warn":  0.0,
-    "pmi_borderline_low": 48.0,
-    "pmi_borderline_high": 52.0,
+    "growth_score_min":    2,     # out of 4 growth signals
+    "inflation_score_min": 2,     # out of 4 inflation signals
+    "pmi_expansion":       50.0,  # PMI proxy: above = expanding
+    "michigan_hot":        3.0,   # Michigan 1Y expectations above 3% = elevated
 }
 
 
 # -----------------------------------------------------------------------------
 # REGIME_COLOURS
-# Hex colour codes for each regime — used consistently across the flag, charts,
-# and heatmap so the visual language is coherent throughout the dashboard.
+# Used consistently across the regime flag, charts, and heatmap.
 # -----------------------------------------------------------------------------
 REGIME_COLOURS: dict[str, str] = {
-    "Stagflation":        "#E05252",  # red   — worst outcome for most assets
-    "Reflation":          "#F5A623",  # amber — hot but growing, mixed signals
-    "Goldilocks":         "#4CAF50",  # green — ideal: low inflation, strong growth
-    "Deflation/Risk-off": "#5B9BD5",  # blue  — falling prices, recession risk
+    "Stagflation":      "#E05252",  # red   — rising inflation, falling growth
+    "Overheating":      "#F5A623",  # amber — rising inflation, rising growth
+    "Goldilocks":       "#4CAF50",  # green — falling inflation, rising growth
+    "Deflation/Bust":   "#5B9BD5",  # blue  — falling inflation, falling growth
 }
 
 
 # -----------------------------------------------------------------------------
 # REGIME_RETURNS
-# Approximate annualised asset returns (%) in each regime, based on historical
-# analysis from 1972 to present. These seed the heatmap chart in the dashboard.
+# Approximate annualised asset returns (%) per regime, 1972–present.
+# Seeds the heatmap chart — can be refined with backtested data over time.
 #
-# Read each row as: "when the economy is in X regime, asset Y has historically
-# returned Z% per year on average."
-#
-# Assets:
-#   Gold  — GC=F     — inflation hedge, safe haven
-#   Oil   — CL=F     — commodity, growth & supply-driven
-#   SPX   — ^GSPC    — US equities (S&P 500)
-#   TLT   — TLT      — long-duration US Treasury bonds (20yr+)
-#   DXY   — DX-Y.NYB — US Dollar index vs basket of currencies
-#   EM    — EEM      — emerging market equities
+# Read as: "when the economy is in X regime, asset Y has historically returned
+# Z% per year on average."
 # -----------------------------------------------------------------------------
 REGIME_RETURNS: dict[str, dict[str, float]] = {
-    "Stagflation":        {"Gold": 22,  "Oil": 18,  "SPX": -8,  "TLT": -12, "DXY": 5,  "EM": -10},
-    "Reflation":          {"Gold": 8,   "Oil": 15,  "SPX": 14,  "TLT": -5,  "DXY": -3, "EM": 18},
-    "Goldilocks":         {"Gold": 3,   "Oil": 5,   "SPX": 18,  "TLT": 6,   "DXY": 0,  "EM": 12},
-    "Deflation/Risk-off": {"Gold": 12,  "Oil": -20, "SPX": -25, "TLT": 20,  "DXY": 8,  "EM": -22},
+    "Stagflation":    {"Gold": 22,  "Oil": 18,  "SPX": -8,  "TLT": -12, "DXY": 5,  "EM": -10},
+    "Overheating":    {"Gold": 8,   "Oil": 15,  "SPX": 14,  "TLT": -5,  "DXY": -3, "EM": 18},
+    "Goldilocks":     {"Gold": 3,   "Oil": 5,   "SPX": 18,  "TLT": 6,   "DXY": 0,  "EM": 12},
+    "Deflation/Bust": {"Gold": 12,  "Oil": -20, "SPX": -25, "TLT": 20,  "DXY": 8,  "EM": -22},
 }
 
 
 # -----------------------------------------------------------------------------
 # RegimeResult
-# A dataclass — basically a lightweight container that holds the classifier's
-# output. Using a dataclass instead of a plain dict means you get attribute
-# access (result.regime) rather than key access (result["regime"]), which is
-# cleaner when the app reads these values.
+# The output object from classify_regime(). Using a dataclass gives clean
+# attribute access (result.regime) rather than key access (result["regime"]).
 #
 # Fields:
-#   regime    — one of the four regime strings above
-#   colour    — hex code for that regime (looked up from REGIME_COLOURS)
-#   inflation — human-readable label: "Hot" or "Cool"
-#   growth    — human-readable label: "Strong" or "Weak"
-#   signals   — the raw input numbers, stored so the dashboard can display them
+#   regime         — one of the four regime strings above
+#   colour         — hex code for UI display
+#   growth_score   — how many of the 4 growth signals fired (0–4)
+#   inflation_score — how many of the 4 inflation signals fired (0–4)
+#   growth_signals  — dict showing each signal's name and whether it fired
+#   inflation_signals — same for inflation
 # -----------------------------------------------------------------------------
 @dataclass
 class RegimeResult:
     regime: str
     colour: str
-    inflation: str   # "Hot" | "Cool"
-    growth: str      # "Strong" | "Weak"
-    signals: dict = field(default_factory=dict)
+    growth_score: int
+    inflation_score: int
+    growth_signals: dict = field(default_factory=dict)
+    inflation_signals: dict = field(default_factory=dict)
 
 
 # -----------------------------------------------------------------------------
-# classify_regime()
-# The main function. Takes three float inputs, runs them through the decision
-# logic below, and returns a RegimeResult.
+# classify_regime() — Layer 1: Growth/Inflation Quadrant
 #
-# Inputs:
-#   cpi_mom      — CPI month-on-month % change (e.g. 0.4 means +0.4% that month)
-#   pmi          — PMI reading (e.g. 51.2)
-#   spread_2s10s — 10yr yield minus 2yr yield in % (e.g. -0.3 means inverted)
+# Uses a scoring engine rather than hard thresholds. Each signal votes +1.
+# Aggregate the votes, threshold at 2/4. This is deliberately transparent —
+# every signal can be explained to a non-technical interviewer in 30 seconds.
+#
+# Input: signals dict from fetch_macro_inputs() in data/fetcher.py
+#
+# Required keys:
+#   Growth signals:
+#     pmi_proxy          — INDPRO-derived PMI equivalent (0–100 scale)
+#     pmi_mom_change     — MoM change in PMI proxy (positive = accelerating)
+#     claims_wow_change  — WoW change in initial jobless claims (negative = good)
+#     spread_10y2y_change — Change in 2s10s spread (positive = curve steepening = growth)
+#   Inflation signals:
+#     cpi_yoy            — Current CPI year-on-year %
+#     cpi_yoy_lag        — CPI YoY from 3 months ago (for acceleration check)
+#     ppi_mom            — PPI month-on-month % change
+#     breakeven_5y5y     — 5Y5Y forward breakeven inflation rate (market's long-run view)
+#     breakeven_5y5y_lag — 5Y5Y breakeven from 3 months ago (for acceleration check)
+#     michigan_exp       — University of Michigan 1Y inflation expectations
 # -----------------------------------------------------------------------------
-def classify_regime(
-    cpi_mom: float,
-    pmi: float,
-    spread_2s10s: float,
-) -> RegimeResult:
-    """Classify the macro regime from CPI momentum, PMI, and the 2s10s yield spread."""
+def classify_regime(signals: dict[str, float]) -> RegimeResult:
+    """Classify the macro regime using a transparent scoring engine (Layer 1)."""
 
-    # --- Step 1: Inflation signal ---
-    # Simple threshold: is CPI rising faster than 0.3% this month?
-    inflation_hot = cpi_mom > THRESHOLDS["cpi_mom_hot"]
-
-    # --- Step 2: Growth signal ---
-    # Primary: is PMI above 50 (expanding)?
-    pmi_expanding = pmi >= THRESHOLDS["pmi_expansion"]
-
-    # Supporting: is the yield curve inverted (2yr yield > 10yr yield)?
-    # An inverted curve means bond markets are pricing in rate cuts ahead —
-    # i.e. they expect the economy to slow or tip into recession.
-    curve_inverted = spread_2s10s < THRESHOLDS["spread_2s10s_warn"]
-
-    # If PMI is in the grey zone (48–52) it could go either way.
-    # In that case, an inverted curve is the tiebreaker — we treat growth as weak.
-    # Outside the grey zone, PMI alone decides.
-    borderline = THRESHOLDS["pmi_borderline_low"] <= pmi < THRESHOLDS["pmi_borderline_high"]
-    growth_strong = pmi_expanding and not (borderline and curve_inverted)
-
-    # --- Step 3: Map to regime quadrant ---
+    # -------------------------------------------------------------------------
+    # GROWTH SCORING — 4 signals, each votes +1 if positive
     #
-    #              | Inflation Hot | Inflation Cool  |
-    #  ------------|---------------|-----------------|
-    #  Growth Weak | Stagflation   | Deflation/Risk  |
-    #  Growth Strong| Reflation    | Goldilocks      |
+    # Signal 1: Is PMI above 50?
+    #   PMI above 50 means the manufacturing sector is currently expanding.
+    #   This is the most direct growth indicator.
+    # -------------------------------------------------------------------------
+    g1 = signals["pmi_proxy"] > THRESHOLDS["pmi_expansion"]
+
+    # Signal 2: Is PMI accelerating (rising MoM)?
+    #   Even if PMI is below 50, a rising PMI means conditions are improving.
+    #   Direction of change matters as much as the level.
+    g2 = signals["pmi_mom_change"] > 0
+
+    # Signal 3: Are initial jobless claims falling week-on-week?
+    #   Rising claims = people losing jobs = growth slowing.
+    #   Falling claims = labour market tightening = growth signal.
+    #   ICSA is weekly, so it's one of the fastest leading indicators we have.
+    g3 = signals["claims_wow_change"] < 0
+
+    # Signal 4: Is the yield curve steepening?
+    #   A steepening curve (spread rising) means markets are pricing in better
+    #   growth ahead. A flattening/inverting curve is a recession warning.
+    g4 = signals["spread_10y2y_change"] > 0
+
+    growth_score = sum([g1, g2, g3, g4])
+
+    # -------------------------------------------------------------------------
+    # INFLATION SCORING — 4 signals, each votes +1 if inflationary
     #
-    if inflation_hot and not growth_strong:
+    # Signal 1: Is CPI YoY accelerating?
+    #   We compare current CPI YoY to 3 months ago. If it's higher, inflation
+    #   is re-accelerating — more dangerous than a stable high level.
+    # -------------------------------------------------------------------------
+    i1 = signals["cpi_yoy"] > signals["cpi_yoy_lag"]
+
+    # Signal 2: Is PPI (producer prices) rising MoM?
+    #   PPI leads CPI by 1–3 months — producers pass cost increases to consumers.
+    #   Rising PPI is an early warning that CPI will follow.
+    i2 = signals["ppi_mom"] > 0
+
+    # Signal 3: Are 5Y5Y breakevens rising?
+    #   The 5Y5Y breakeven is the bond market's view of average inflation 5–10
+    #   years from now. Rising breakevens = market losing confidence in the Fed's
+    #   ability to control long-run inflation. A critical signal for central banks.
+    i3 = signals["breakeven_5y5y"] > signals["breakeven_5y5y_lag"]
+
+    # Signal 4: Are consumer inflation expectations elevated?
+    #   From the University of Michigan survey. Above 3% is considered elevated.
+    #   Expectations matter because they're self-fulfilling — if people expect
+    #   high inflation, they demand higher wages, which causes higher inflation.
+    i4 = signals["michigan_exp"] > THRESHOLDS["michigan_hot"]
+
+    inflation_score = sum([i1, i2, i3, i4])
+
+    # -------------------------------------------------------------------------
+    # QUADRANT CLASSIFICATION
+    #
+    # Map the two scores to one of four regimes:
+    #
+    #                  | Inflation ≥ 2 | Inflation < 2   |
+    #  -----------------|---------------|-----------------|
+    #  Growth ≥ 2       | Overheating   | Goldilocks      |
+    #  Growth < 2       | Stagflation   | Deflation/Bust  |
+    #
+    # -------------------------------------------------------------------------
+    g_threshold = THRESHOLDS["growth_score_min"]
+    i_threshold = THRESHOLDS["inflation_score_min"]
+
+    if growth_score >= g_threshold and inflation_score >= i_threshold:
+        regime = "Overheating"
+    elif growth_score < g_threshold and inflation_score >= i_threshold:
         regime = "Stagflation"
-    elif inflation_hot and growth_strong:
-        regime = "Reflation"
-    elif not inflation_hot and growth_strong:
+    elif growth_score >= g_threshold and inflation_score < i_threshold:
         regime = "Goldilocks"
     else:
-        regime = "Deflation/Risk-off"
+        regime = "Deflation/Bust"
 
-    # --- Step 4: Return a RegimeResult with everything the dashboard needs ---
     return RegimeResult(
         regime=regime,
         colour=REGIME_COLOURS[regime],
-        inflation="Hot" if inflation_hot else "Cool",
-        growth="Strong" if growth_strong else "Weak",
-        # Store raw inputs so the UI can show "what drove this classification"
-        signals={
-            "cpi_mom": cpi_mom,
-            "pmi": pmi,
-            "spread_2s10s": spread_2s10s,
-            "curve_inverted": curve_inverted,
+        growth_score=growth_score,
+        inflation_score=inflation_score,
+        # Store each signal as name → True/False so the dashboard can show
+        # exactly which signals fired and which didn't
+        growth_signals={
+            "PMI > 50":               g1,
+            "PMI accelerating (MoM)": g2,
+            "Claims falling (WoW)":   g3,
+            "Curve steepening":       g4,
+        },
+        inflation_signals={
+            "CPI YoY accelerating":       i1,
+            "PPI rising (MoM)":           i2,
+            "Breakevens rising":          i3,
+            "Michigan exp > 3%":          i4,
         },
     )
+
+
+# -----------------------------------------------------------------------------
+# Layer 2 stub — Monetary Policy Cycle
+# Four stances: early_easing → full_easing → early_tightening → peak_tightening
+# The interaction with Layer 1 is critical:
+#   Stagflation + peak_tightening (2022) = worst combination — Fed can't ease.
+# TODO: implement using FEDFUNDS trend, NFCI, T10Y3M, DGS10 direction
+# -----------------------------------------------------------------------------
+def classify_monetary_cycle(signals: dict[str, float]) -> str:
+    """Stub — monetary policy cycle classification (Layer 2). Not yet implemented."""
+    return "unknown"
+
+
+# -----------------------------------------------------------------------------
+# Layer 3 stub — RORO (Risk-on / Risk-off)
+# Fast overlay (hours–days). Doesn't change the regime but shows whether
+# participants are expressing it through risk or safety assets.
+# In risk-off: equities ↓, USD ↑, gold ↑, vol ↑, credit spreads widen.
+# TODO: implement using VIX level/change, DXY, Gold/SPY ratio, HYG, EEM vs SPY
+# -----------------------------------------------------------------------------
+def classify_roro(signals: dict[str, float]) -> str:
+    """Stub — risk-on/risk-off overlay (Layer 3). Not yet implemented."""
+    return "unknown"
