@@ -210,15 +210,127 @@ def classify_regime(signals: dict[str, float]) -> RegimeResult:
 
 
 # -----------------------------------------------------------------------------
-# Layer 2 stub — Monetary Policy Cycle
-# Four stances: early_easing → full_easing → early_tightening → peak_tightening
-# The interaction with Layer 1 is critical:
-#   Stagflation + peak_tightening (2022) = worst combination — Fed can't ease.
-# TODO: implement using FEDFUNDS trend, NFCI, T10Y3M, DGS10 direction
+# Monetary cycle constants
 # -----------------------------------------------------------------------------
-def classify_monetary_cycle(signals: dict[str, float]) -> str:
-    """Stub — monetary policy cycle classification (Layer 2). Not yet implemented."""
-    return "unknown"
+
+CYCLE_COLOURS: dict[str, str] = {
+    "Peak Tightening":  "#B91C1C",  # dark red   — maximum restriction, worst for risk
+    "Early Tightening": "#EA580C",  # orange     — hiking cycle underway, conditions tightening
+    "Early Easing":     "#2563EB",  # blue       — first cuts, relief beginning
+    "Full Easing":      "#059669",  # green      — accommodative, fuel for risk assets
+}
+
+# Thresholds for the monetary cycle classifier
+CYCLE_THRESHOLDS: dict[str, float] = {
+    "hiking_threshold":   0.10,   # Fed Funds 6m change above this = hiking cycle
+    "cutting_threshold": -0.10,   # Fed Funds 6m change below this = cutting cycle
+    "near_peak_gap":      0.25,   # within 25bp of 12m high = near peak
+    "full_easing_gap":    1.00,   # more than 100bp below 12m high = well into cuts
+    "nfci_tight":         0.30,   # NFCI above this = tight financial conditions
+    "nfci_loose":        -0.30,   # NFCI below this = loose financial conditions
+    "high_rate_level":    4.00,   # Fed Funds above this = restrictive in absolute terms
+}
+
+
+@dataclass
+class MonetaryCycleResult:
+    stance: str          # one of the four cycle labels
+    colour: str          # hex code for UI display
+    signals: dict = field(default_factory=dict)
+
+
+# -----------------------------------------------------------------------------
+# classify_monetary_cycle() — Layer 2
+#
+# Determines where the Fed is in its policy cycle. Logic:
+#
+#   Step 1: Is the Fed hiking, cutting, or on hold? (6-month Fed Funds change)
+#   Step 2: Early or late in that direction? (proximity to 12-month high/low)
+#   Step 3: If on hold, classify by absolute level + financial conditions
+#
+# Why this matters for Layer 1:
+#   Same quadrant feels very different depending on the monetary stance.
+#   Overheating + Peak Tightening = 2022 (brutal for everything).
+#   Goldilocks + Full Easing = 1995, 2019 (best of all worlds).
+#
+# Required signal keys (from fetch_macro_inputs()):
+#   fed_funds_current   — latest effective Fed Funds Rate
+#   fed_funds_1m_change — MoM change (non-zero = FOMC just moved)
+#   fed_funds_6m_change — 6-month change (direction of cycle)
+#   fed_funds_12m_high  — peak rate over the past 12 months
+#   nfci                — Chicago Fed financial conditions index
+#   real_yield_current  — 10yr TIPS yield today
+#   real_yield_3m_ago   — 10yr TIPS yield 3 months ago
+# -----------------------------------------------------------------------------
+def classify_monetary_cycle(signals: dict[str, float]) -> MonetaryCycleResult:
+    """Classify the monetary policy cycle stance (Layer 2)."""
+
+    ff_current    = signals["fed_funds_current"]
+    ff_6m_change  = signals["fed_funds_6m_change"]
+    ff_12m_high   = signals["fed_funds_12m_high"]
+    nfci          = signals["nfci"]
+
+    # --- Step 1: Direction ---
+    # Fed Funds 6-month change tells us whether we're in a hiking or cutting cycle.
+    # Small moves (< ±0.10%) are treated as "on hold" — the Fed hasn't moved meaningfully.
+    hiking  = ff_6m_change >  CYCLE_THRESHOLDS["hiking_threshold"]
+    cutting = ff_6m_change <  CYCLE_THRESHOLDS["cutting_threshold"]
+    on_hold = not hiking and not cutting
+
+    # --- Step 2: Stage within the direction ---
+    # Distance from 12-month high tells us early vs late in the cycle.
+    #
+    # Hiking cycle:
+    #   Current rate ≈ 12m high → still near the peak → Peak Tightening
+    #   Current rate well below 12m high → just started hiking → Early Tightening
+    #
+    # Cutting cycle:
+    #   Current rate just below 12m high → first cut(s) just made → Early Easing
+    #   Current rate well below 12m high → well into the cutting cycle → Full Easing
+    gap_from_peak = ff_12m_high - ff_current   # how far below the peak we are
+    near_peak     = gap_from_peak < CYCLE_THRESHOLDS["near_peak_gap"]
+    full_easing   = gap_from_peak > CYCLE_THRESHOLDS["full_easing_gap"]
+
+    if hiking and near_peak:
+        # Hiking and at/near the top — Fed is at or approaching the terminal rate
+        stance = "Peak Tightening"
+    elif hiking and not near_peak:
+        # Hiking but still well below recent highs — cycle just beginning
+        stance = "Early Tightening"
+    elif cutting and full_easing:
+        # Multiple cuts in — well into the easing cycle
+        stance = "Full Easing"
+    elif cutting and not full_easing:
+        # First cut(s) have landed but rate still close to the peak
+        stance = "Early Easing"
+    else:
+        # On hold — classify by absolute rate level and financial conditions.
+        # On hold at high rates with tight conditions = effectively Peak Tightening.
+        # On hold at low rates with loose conditions = effectively Full Easing.
+        if ff_current >= CYCLE_THRESHOLDS["high_rate_level"] or nfci >= CYCLE_THRESHOLDS["nfci_tight"]:
+            stance = "Peak Tightening"
+        elif ff_current <= 1.0 or nfci <= CYCLE_THRESHOLDS["nfci_loose"]:
+            stance = "Full Easing"
+        elif ff_6m_change > 0:
+            stance = "Early Tightening"
+        else:
+            stance = "Early Easing"
+
+    # Real yield direction — supporting context (not used in classification,
+    # but stored in signals so the UI can show it in the breakdown)
+    real_yield_rising = signals["real_yield_current"] > signals["real_yield_3m_ago"]
+
+    return MonetaryCycleResult(
+        stance=stance,
+        colour=CYCLE_COLOURS[stance],
+        signals={
+            "Fed Funds current":    ff_current,
+            "6m change":            ff_6m_change,
+            "Gap from 12m high":    round(gap_from_peak, 2),
+            "NFCI":                 nfci,
+            "Real yield rising":    real_yield_rising,
+        },
+    )
 
 
 # -----------------------------------------------------------------------------

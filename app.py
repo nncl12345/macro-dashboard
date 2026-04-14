@@ -29,7 +29,7 @@ from data.fetcher import (
     fetch_market_snapshot,
     fetch_yield_curve,
 )
-from regime.classifier import REGIME_COLOURS, classify_regime
+from regime.classifier import REGIME_COLOURS, classify_regime, classify_monetary_cycle
 
 # -----------------------------------------------------------------------------
 # Page config — must be the first Streamlit call in the script.
@@ -94,8 +94,9 @@ with st.spinner("Loading live macro data…"):
     cpi_df         = fetch_cpi_trend()
     snapshot_df    = fetch_market_snapshot()
 
-# Run the regime classifier on the live signals
-result = classify_regime(macro_signals)
+# Run both classifiers on the live signals
+result        = classify_regime(macro_signals)
+cycle_result  = classify_monetary_cycle(macro_signals)
 
 # Colour used throughout this render for the current regime
 regime_colour = REGIME_COLOURS[result.regime]
@@ -109,7 +110,7 @@ regime_colour = REGIME_COLOURS[result.regime]
 flag_col, kpi1, kpi2, kpi3, kpi4 = st.columns([2, 1, 1, 1, 1])
 
 with flag_col:
-    # Large colour-coded regime label — the headline of the whole dashboard
+    # Layer 1 — large colour-coded regime flag
     st.markdown(
         f'<div class="regime-flag" style="background-color:{regime_colour}22; '
         f'color:{regime_colour}; border: 2px solid {regime_colour};">'
@@ -117,10 +118,21 @@ with flag_col:
         f'</div>',
         unsafe_allow_html=True,
     )
-    # Score breakdown shown as a sub-label so the viewer knows how confident
-    # the classification is (e.g. 4/4 growth signals vs 2/4)
+    # Layer 2 — smaller monetary cycle badge shown directly below
+    cycle_colour = cycle_result.colour
     st.markdown(
-        f'<div class="regime-sub">'
+        f'<div style="display:inline-block; margin-top:0.4rem; '
+        f'font-size:0.85rem; font-weight:600; letter-spacing:0.03em; '
+        f'padding:0.25rem 0.6rem; border-radius:5px; '
+        f'background-color:{cycle_colour}22; color:{cycle_colour}; '
+        f'border: 1.5px solid {cycle_colour};">'
+        f'{cycle_result.stance}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    # Score sub-label
+    st.markdown(
+        f'<div class="regime-sub" style="margin-top:0.3rem;">'
         f'Growth {result.growth_score}/4 · Inflation {result.inflation_score}/4'
         f'</div>',
         unsafe_allow_html=True,
@@ -226,21 +238,27 @@ st.plotly_chart(
 # =============================================================================
 
 with st.expander("📋  Signal breakdown — what drove this regime classification?"):
-    g_col, i_col = st.columns(2)
+    g_col, i_col, m_col = st.columns(3)
 
     with g_col:
-        st.markdown(f"**Growth score: {result.growth_score}/4**")
+        st.markdown(f"**Layer 1 — Growth: {result.growth_score}/4**")
         for signal, fired in result.growth_signals.items():
             icon = "✅" if fired else "❌"
             st.markdown(f"{icon} {signal}")
 
     with i_col:
-        st.markdown(f"**Inflation score: {result.inflation_score}/4**")
+        st.markdown(f"**Layer 1 — Inflation: {result.inflation_score}/4**")
         for signal, fired in result.inflation_signals.items():
             icon = "✅" if fired else "❌"
             st.markdown(f"{icon} {signal}")
 
-    st.caption(
-        "Regime = Layer 1 (Growth/Inflation Quadrant). "
-        "Monetary cycle (Layer 2) and RORO overlay (Layer 3) coming soon."
-    )
+    with m_col:
+        st.markdown(f"**Layer 2 — Monetary Cycle: {cycle_result.stance}**")
+        for key, val in cycle_result.signals.items():
+            if isinstance(val, bool):
+                icon = "✅" if val else "❌"
+                st.markdown(f"{icon} {key}")
+            else:
+                st.markdown(f"• {key}: **{val}**")
+
+    st.caption("Layer 3 (RORO overlay) coming soon.")

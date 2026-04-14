@@ -216,6 +216,46 @@ def fetch_macro_inputs() -> dict[str, float]:
     mich = fetch_fred_series("MICH", periods=3)
     michigan_exp = round(float(mich.iloc[-1]), 2)
 
+    # =========================================================================
+    # MONETARY CYCLE SIGNALS (Layer 2)
+    # =========================================================================
+
+    # --- Fed Funds Rate trend ---
+    # Fetch 14 months so we can calculate 1-month, 6-month, and 12-month changes.
+    # The direction and pace of Fed Funds tells us where we are in the cycle.
+    ff = fetch_fred_series("FEDFUNDS", periods=14)
+    fed_funds_current = round(float(ff.iloc[-1]), 2)
+
+    # 1-month change: is the Fed actively hiking or cutting right now?
+    # Non-zero = the FOMC just moved rates at their last meeting.
+    fed_funds_1m_change = round(float(ff.iloc[-1] - ff.iloc[-2]), 2)
+
+    # 6-month change: tells us the direction of the current cycle.
+    # Positive = hiking cycle, negative = cutting cycle, near zero = on hold.
+    fed_funds_6m_change = round(float(ff.iloc[-1] - ff.iloc[-7]), 2)
+
+    # 12-month high: the peak rate over the past year.
+    # If current rate is near this high, the Fed is at or near peak tightening.
+    # If current rate is well below this high, cuts have begun (early/full easing).
+    fed_funds_12m_high = round(float(ff.tail(12).max()), 2)
+
+    # --- Chicago Fed NFCI (National Financial Conditions Index) ---
+    # Weekly index measuring tightness of US financial conditions.
+    # Negative = loose (easy to borrow, credit abundant, spreads tight)
+    # Positive = tight (hard to borrow, spreads wide, credit contracting)
+    # This captures the real-world impact of Fed policy beyond just the rate level.
+    nfci_series = fetch_fred_series("NFCI", periods=5)
+    nfci = round(float(nfci_series.iloc[-1]), 3)
+
+    # --- 10yr Real Yield direction ---
+    # Rising real yields = financial conditions tightening (bonds getting cheaper
+    # in real terms). Falling real yields = easing impulse.
+    # We compare current to 3 months ago to get the direction of travel.
+    real_yield_series = fetch_fred_series("DFII10", periods=70)
+    real_yield_current = round(float(real_yield_series.iloc[-1]), 2)
+    real_yield_3m_ago  = round(float(real_yield_series.iloc[-60]), 2)
+    # iloc[-60] ≈ 3 months ago on a daily series
+
     return {
         # Growth
         "pmi_proxy":           pmi_proxy,
@@ -229,6 +269,14 @@ def fetch_macro_inputs() -> dict[str, float]:
         "breakeven_5y5y":      breakeven_5y5y,
         "breakeven_5y5y_lag":  breakeven_5y5y_lag,
         "michigan_exp":        michigan_exp,
+        # Monetary cycle (Layer 2)
+        "fed_funds_current":   fed_funds_current,
+        "fed_funds_1m_change": fed_funds_1m_change,
+        "fed_funds_6m_change": fed_funds_6m_change,
+        "fed_funds_12m_high":  fed_funds_12m_high,
+        "nfci":                nfci,
+        "real_yield_current":  real_yield_current,
+        "real_yield_3m_ago":   real_yield_3m_ago,
     }
 
 
