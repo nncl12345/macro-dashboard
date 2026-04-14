@@ -321,11 +321,11 @@ def plot_market_snapshot(df: pd.DataFrame) -> go.Figure:
     fig = go.Figure(data=go.Table(
         columnwidth=[80, 80, 60, 60, 60, 70],
         header=dict(
-            values=[f"<b>{c}</b>" for c in columns],
+            values=columns,
             fill_color="#1e3a5f",         # dark navy header
-            font=dict(color="white", size=12, family=FONT_FAMILY),
+            font=dict(color="white", size=13, family=FONT_FAMILY, weight="bold"),
             align="center",
-            height=36,
+            height=40,
         ),
         cells=dict(
             values=cell_values,
