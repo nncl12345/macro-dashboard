@@ -52,8 +52,8 @@ st.set_page_config(
 # -----------------------------------------------------------------------------
 st.markdown("""
 <style>
-    /* Tighten top padding */
-    .block-container { padding-top: 1.5rem; }
+    /* Enough top padding to clear the Streamlit toolbar */
+    .block-container { padding-top: 3.5rem; }
 
     /* Regime flag — large centred label */
     .regime-flag {

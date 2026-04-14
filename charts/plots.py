@@ -24,7 +24,7 @@ from regime.classifier import REGIME_COLOURS, REGIME_RETURNS
 # Kept here so all charts have a consistent look without repeating values.
 # -----------------------------------------------------------------------------
 FONT_FAMILY = "Inter, -apple-system, BlinkMacSystemFont, sans-serif"
-FONT_COLOR  = "#1a1a1a"
+FONT_COLOR  = "#000000"
 GRID_COLOR  = "#ebebeb"
 BG_COLOR    = "white"
 
@@ -41,8 +41,15 @@ def _base_layout(title: str = "", height: int = 380, margin: Optional[dict] = No
     Applying this to every chart ensures consistent fonts, colours, and margins.
     Pass margin= to override the default.
     """
+    # axis_style is applied to both xaxis and yaxis unless the caller overrides them.
+    # Explicitly setting tickfont and title font forces black text — Plotly's
+    # white theme otherwise renders axis labels in a washed-out grey.
+    axis_style = dict(
+        tickfont=dict(color=FONT_COLOR, family=FONT_FAMILY),
+        title_font=dict(color=FONT_COLOR, family=FONT_FAMILY),
+    )
     return dict(
-        title=dict(text=title, font=dict(size=14, color=FONT_COLOR), x=0, xanchor="left"),
+        title=dict(text=title, font=dict(size=14, color=FONT_COLOR, family=FONT_FAMILY), x=0, xanchor="left"),
         font=dict(family=FONT_FAMILY, size=12, color=FONT_COLOR),
         plot_bgcolor=BG_COLOR,
         paper_bgcolor=BG_COLOR,
@@ -54,7 +61,10 @@ def _base_layout(title: str = "", height: int = 380, margin: Optional[dict] = No
             y=-0.25,
             xanchor="left",
             x=0,
+            font=dict(color=FONT_COLOR, family=FONT_FAMILY),
         ),
+        xaxis=axis_style,
+        yaxis=axis_style,
         **kwargs,
     )
 
@@ -107,20 +117,13 @@ def plot_yield_curve(current: pd.Series, year_ago: pd.Series) -> go.Figure:
         hoverinfo="skip",
     ))
 
-    fig.update_layout(
-        **_base_layout(title="Yield Curve"),
-        yaxis=dict(
-            title="Yield (%)",
-            gridcolor=GRID_COLOR,
-            zeroline=False,
-        ),
-        xaxis=dict(
-            title="Maturity",
-            showgrid=False,
-            categoryorder="array",
-            # Explicit order so Plotly doesn't sort alphabetically
-            categoryarray=["3M", "2Y", "5Y", "10Y", "30Y"],
-        ),
+    fig.update_layout(**_base_layout(title="Yield Curve"))
+    fig.update_yaxes(title="Yield (%)", gridcolor=GRID_COLOR, zeroline=False)
+    fig.update_xaxes(
+        title="Maturity",
+        showgrid=False,
+        categoryorder="array",
+        categoryarray=["3M", "2Y", "5Y", "10Y", "30Y"],
     )
 
     return fig
@@ -170,16 +173,9 @@ def plot_cpi_trend(df: pd.DataFrame) -> go.Figure:
         annotation_font=dict(color=COLOR_FED_TARGET, size=11),
     )
 
-    fig.update_layout(
-        **_base_layout(title="CPI Trend (YoY %)"),
-        yaxis=dict(
-            title="YoY %",
-            gridcolor=GRID_COLOR,
-            zeroline=False,
-            ticksuffix="%",
-        ),
-        xaxis=dict(showgrid=False, title=""),
-    )
+    fig.update_layout(**_base_layout(title="CPI Trend (YoY %)"))
+    fig.update_yaxes(title="YoY %", gridcolor=GRID_COLOR, zeroline=False, ticksuffix="%")
+    fig.update_xaxes(showgrid=False, title="")
 
     return fig
 
@@ -266,22 +262,9 @@ def plot_regime_heatmap(current_regime: str) -> go.Figure:
             yshift=6,
         )
 
-    fig.update_layout(
-        **_base_layout(
-            title="Historical Asset Returns by Regime (Ann. %)",
-            height=420,
-        ),
-        xaxis=dict(
-            side="bottom",
-            showgrid=False,
-            title="",
-        ),
-        yaxis=dict(
-            showgrid=False,
-            title="",
-            autorange="reversed",   # keep assets in top-to-bottom order
-        ),
-    )
+    fig.update_layout(**_base_layout(title="Historical Asset Returns by Regime (Ann. %)", height=420))
+    fig.update_xaxes(side="bottom", showgrid=False, title="")
+    fig.update_yaxes(showgrid=False, title="", autorange="reversed")
 
     return fig
 
