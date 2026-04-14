@@ -27,9 +27,10 @@ from data.fetcher import (
     fetch_kpi_data,
     fetch_macro_inputs,
     fetch_market_snapshot,
+    fetch_roro_signals,
     fetch_yield_curve,
 )
-from regime.classifier import REGIME_COLOURS, classify_regime, classify_monetary_cycle
+from regime.classifier import REGIME_COLOURS, classify_regime, classify_monetary_cycle, classify_roro
 
 # -----------------------------------------------------------------------------
 # Page config — must be the first Streamlit call in the script.
@@ -93,10 +94,12 @@ with st.spinner("Loading live macro data…"):
     curve_now, curve_ago = fetch_yield_curve()
     cpi_df         = fetch_cpi_trend()
     snapshot_df    = fetch_market_snapshot()
+    roro_signals   = fetch_roro_signals()
 
-# Run both classifiers on the live signals
+# Run all three classifiers on the live signals
 result        = classify_regime(macro_signals)
 cycle_result  = classify_monetary_cycle(macro_signals)
+roro_result   = classify_roro(roro_signals)
 
 # Colour used throughout this render for the current regime
 regime_colour = REGIME_COLOURS[result.regime]
@@ -127,6 +130,18 @@ with flag_col:
         f'background-color:{cycle_colour}22; color:{cycle_colour}; '
         f'border: 1.5px solid {cycle_colour};">'
         f'{cycle_result.stance}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    # Layer 3 — RORO badge shown below monetary cycle badge
+    roro_colour = roro_result.colour
+    st.markdown(
+        f'<div style="display:inline-block; margin-top:0.3rem; '
+        f'font-size:0.85rem; font-weight:600; letter-spacing:0.03em; '
+        f'padding:0.25rem 0.6rem; border-radius:5px; '
+        f'background-color:{roro_colour}22; color:{roro_colour}; '
+        f'border: 1.5px solid {roro_colour};">'
+        f'{roro_result.stance} ({roro_result.score}/5)'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -238,7 +253,7 @@ st.plotly_chart(
 # =============================================================================
 
 with st.expander("📋  Signal breakdown — what drove this regime classification?"):
-    g_col, i_col, m_col = st.columns(3)
+    g_col, i_col, m_col, r_col = st.columns(4)
 
     with g_col:
         st.markdown(f"**Layer 1 — Growth: {result.growth_score}/4**")
@@ -261,4 +276,12 @@ with st.expander("📋  Signal breakdown — what drove this regime classificati
             else:
                 st.markdown(f"• {key}: **{val}**")
 
-    st.caption("Layer 3 (RORO overlay) coming soon.")
+    with r_col:
+        st.markdown(f"**Layer 3 — RORO: {roro_result.stance} ({roro_result.score}/5)**")
+        for key, val in roro_result.signals.items():
+            if isinstance(val, bool):
+                # 🔴 = this risk-off signal fired, 🟢 = didn't fire
+                icon = "🔴" if val else "🟢"
+                st.markdown(f"{icon} {key}")
+            else:
+                st.markdown(f"• {key}: **{val}**")

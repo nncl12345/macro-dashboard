@@ -449,23 +449,41 @@ def fetch_roro_signals() -> dict[str, float]:
 
     signals: dict[str, float] = {}
 
+    # VIX level + 5-day point change (e.g. +3.2 = fear rising = risk-off signal)
     if "vix" in prices and len(prices["vix"]) >= 6:
-        signals["vix_level"]    = round(float(prices["vix"].iloc[-1]), 2)
+        signals["vix_level"]     = round(float(prices["vix"].iloc[-1]), 2)
         signals["vix_5d_change"] = round(
             float(prices["vix"].iloc[-1] - prices["vix"].iloc[-6]), 2
         )
 
-    if "hyg" in prices:
-        signals["hyg_price"] = round(float(prices["hyg"].iloc[-1]), 2)
-
-    if "gold" in prices and "spy" in prices:
-        # Gold/SPY ratio: rising = risk-off (safe haven outperforming equities)
-        signals["gold_spy_ratio"] = round(
-            float(prices["gold"].iloc[-1] / prices["spy"].iloc[-1]), 4
+    # DXY 5-day % change: USD strengthening = safe-haven bid = risk-off
+    if "dxy" in prices and len(prices["dxy"]) >= 6:
+        signals["dxy_5d_change"] = round(
+            float((prices["dxy"].iloc[-1] / prices["dxy"].iloc[-6] - 1) * 100), 3
         )
 
+    # HYG price level (for display) + 5-day % change: falling HYG = credit spreads
+    # widening = risk-off (investors dumping high-yield bonds)
+    if "hyg" in prices:
+        signals["hyg_price"] = round(float(prices["hyg"].iloc[-1]), 2)
+        if len(prices["hyg"]) >= 6:
+            signals["hyg_5d_change"] = round(
+                float((prices["hyg"].iloc[-1] / prices["hyg"].iloc[-6] - 1) * 100), 3
+            )
+
+    # Gold/SPY ratio: current level + 5-day % change.
+    # Rising ratio = gold outperforming equities = classic risk-off signature.
+    if "gold" in prices and "spy" in prices:
+        ratio_now = float(prices["gold"].iloc[-1] / prices["spy"].iloc[-1])
+        signals["gold_spy_ratio"] = round(ratio_now, 4)
+        if len(prices["gold"]) >= 6 and len(prices["spy"]) >= 6:
+            ratio_5d_ago = float(prices["gold"].iloc[-6] / prices["spy"].iloc[-6])
+            signals["gold_spy_ratio_5d_change"] = round(
+                (ratio_now / ratio_5d_ago - 1) * 100, 3
+            )
+
+    # EEM vs SPY 5-day relative return: negative = EM underperforming US = risk-off
     if "eem" in prices and "spy" in prices and len(prices["eem"]) >= 6:
-        # EEM vs SPY 5-day relative performance: positive = risk-on (EM outperforming)
         eem_ret = float(prices["eem"].iloc[-1] / prices["eem"].iloc[-6] - 1)
         spy_ret = float(prices["spy"].iloc[-1] / prices["spy"].iloc[-6] - 1)
         signals["eem_vs_spy_5d"] = round((eem_ret - spy_ret) * 100, 3)

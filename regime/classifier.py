@@ -334,12 +334,105 @@ def classify_monetary_cycle(signals: dict[str, float]) -> MonetaryCycleResult:
 
 
 # -----------------------------------------------------------------------------
-# Layer 3 stub — RORO (Risk-on / Risk-off)
-# Fast overlay (hours–days). Doesn't change the regime but shows whether
-# participants are expressing it through risk or safety assets.
-# In risk-off: equities ↓, USD ↑, gold ↑, vol ↑, credit spreads widen.
-# TODO: implement using VIX level/change, DXY, Gold/SPY ratio, HYG, EEM vs SPY
+# Layer 3 — RORO (Risk-on / Risk-off)
+#
+# A fast-moving overlay that sits on top of Layers 1 and 2. It doesn't change
+# the regime label but tells you how participants are *expressing* it right now:
+# through risk assets (equities, EM, HY credit) or safety assets (USD, gold, vol).
+#
+# Why this matters:
+#   Overheating + Risk-On  → rally still has legs, stay long equities
+#   Overheating + Risk-Off → distribution phase, consider reducing exposure
+#   Goldilocks + Risk-On   → classic bull; 1995, 2019 felt like this
+#   Stagflation + Risk-Off → 2022 scenario — brutal for everything except commodities
+#
+# 5-signal voting engine (same pattern as Layer 1):
+#   Each signal votes +1 for Risk-Off. Total votes → stance:
+#     ≥ 3 votes = Risk-Off   (majority of signals screaming caution)
+#       2 votes = Neutral     (mixed signals — no clear direction)
+#     ≤ 1 vote  = Risk-On    (risk appetite intact)
+#
+# The 5 signals:
+#   r1 — VIX 5-day change positive  (fear index rising → risk-off)
+#   r2 — DXY 5-day change positive  (USD strengthening → safe-haven bid)
+#   r3 — Gold/SPY ratio 5d rising   (gold outpacing equities → flight to safety)
+#   r4 — HYG 5-day change negative  (high-yield bonds falling → credit stress)
+#   r5 — EEM underperforming SPY    (EM selling off relative to US → de-risking)
+#
+# Required signal keys (from fetch_roro_signals() in data/fetcher.py):
+#   vix_5d_change              — VIX point change over last 5 trading days
+#   dxy_5d_change              — DXY % change over last 5 trading days
+#   gold_spy_ratio_5d_change   — Gold/SPY ratio % change over 5 trading days
+#   hyg_5d_change              — HYG ETF % change over 5 trading days
+#   eem_vs_spy_5d              — EEM 5d return minus SPY 5d return (relative %)
 # -----------------------------------------------------------------------------
-def classify_roro(signals: dict[str, float]) -> str:
-    """Stub — risk-on/risk-off overlay (Layer 3). Not yet implemented."""
-    return "unknown"
+
+RORO_COLOURS: dict[str, str] = {
+    "Risk-Off": "#B91C1C",   # dark red   — caution, safety trade
+    "Neutral":  "#92400E",   # amber      — mixed signals
+    "Risk-On":  "#059669",   # green      — risk appetite intact
+}
+
+RORO_THRESHOLDS: dict[str, int] = {
+    "risk_off_min": 3,   # ≥3 votes = Risk-Off
+    "neutral_min":  2,   # 2 votes  = Neutral
+}
+
+
+@dataclass
+class RoroResult:
+    stance: str          # "Risk-On", "Neutral", or "Risk-Off"
+    colour: str          # hex code for UI display
+    score: int           # raw vote count (0–5, higher = more risk-off)
+    signals: dict = field(default_factory=dict)
+
+
+def classify_roro(signals: dict[str, float]) -> RoroResult:
+    """Classify the risk-on/risk-off overlay (Layer 3) using a 5-signal voting engine."""
+
+    # Signal 1: VIX rising over the past 5 days?
+    # The VIX is the options market's implied volatility for the S&P 500.
+    # A rising VIX means investors are buying protection → fear is increasing.
+    r1 = signals.get("vix_5d_change", 0) > 0
+
+    # Signal 2: USD (DXY) rising over 5 days?
+    # In risk-off episodes, capital flees to the dollar as the world's reserve
+    # currency. DXY up = global de-risking underway.
+    r2 = signals.get("dxy_5d_change", 0) > 0
+
+    # Signal 3: Gold/SPY ratio rising over 5 days?
+    # Gold outperforming equities is the classic risk-off signature.
+    # Ratio rising means gold is gaining ground on stocks.
+    r3 = signals.get("gold_spy_ratio_5d_change", 0) > 0
+
+    # Signal 4: HYG (high-yield bond ETF) falling over 5 days?
+    # High-yield (junk) bonds are risk assets. When investors get nervous they
+    # sell HYG and buy Treasuries — credit spreads widen, HYG price drops.
+    r4 = signals.get("hyg_5d_change", 0) < 0
+
+    # Signal 5: EM equities underperforming US equities over 5 days?
+    # Emerging markets are the highest-beta risk assets globally. When risk
+    # appetite fades, EM sells off faster than the US — EEM lags SPY.
+    r5 = signals.get("eem_vs_spy_5d", 0) < 0
+
+    score = sum([r1, r2, r3, r4, r5])
+
+    if score >= RORO_THRESHOLDS["risk_off_min"]:
+        stance = "Risk-Off"
+    elif score >= RORO_THRESHOLDS["neutral_min"]:
+        stance = "Neutral"
+    else:
+        stance = "Risk-On"
+
+    return RoroResult(
+        stance=stance,
+        colour=RORO_COLOURS[stance],
+        score=score,
+        signals={
+            "VIX 5d change":         round(signals.get("vix_5d_change", float("nan")), 2),
+            "DXY rising (5d)":       r2,
+            "Gold/SPY ratio rising": r3,
+            "HYG falling (5d)":      r4,
+            "EEM vs SPY (5d)":       round(signals.get("eem_vs_spy_5d", float("nan")), 2),
+        },
+    )
