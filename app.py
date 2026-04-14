@@ -279,9 +279,9 @@ with st.expander("📋  Signal breakdown — what drove this regime classificati
     with r_col:
         st.markdown(f"**Layer 3 — RORO: {roro_result.stance} ({roro_result.score}/5)**")
         for key, val in roro_result.signals.items():
-            if isinstance(val, bool):
-                # 🔴 = this risk-off signal fired, 🟢 = didn't fire
-                icon = "🔴" if val else "🟢"
-                st.markdown(f"{icon} {key}")
-            else:
-                st.markdown(f"• {key}: **{val}**")
+            is_risk_off = roro_result.votes[key]
+            icon  = "🔴" if is_risk_off else "🟢"
+            label = "Risk-Off" if is_risk_off else "Risk-On"
+            # Format with explicit + sign so direction is unambiguous at a glance
+            val_str = f"{val:+.2f}" if val == val else "n/a"  # nan check
+            st.markdown(f"{icon} **{key}**: {val_str} — {label}")

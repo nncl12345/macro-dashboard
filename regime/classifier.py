@@ -384,7 +384,8 @@ class RoroResult:
     stance: str          # "Risk-On", "Neutral", or "Risk-Off"
     colour: str          # hex code for UI display
     score: int           # raw vote count (0–5, higher = more risk-off)
-    signals: dict = field(default_factory=dict)
+    signals: dict = field(default_factory=dict)  # signal name → numeric value
+    votes: dict = field(default_factory=dict)    # signal name → True if voted risk-off
 
 
 def classify_roro(signals: dict[str, float]) -> RoroResult:
@@ -424,15 +425,20 @@ def classify_roro(signals: dict[str, float]) -> RoroResult:
     else:
         stance = "Risk-On"
 
+    # Bundle each signal's numeric value and its vote together so the UI
+    # can display both without re-deriving the direction logic.
+    _signal_data = {
+        "VIX 5d chg (pts)":    (round(signals.get("vix_5d_change", float("nan")), 2),  r1),
+        "DXY 5d chg %":        (round(signals.get("dxy_5d_change", float("nan")), 2),  r2),
+        "Gold/SPY 5d chg %":   (round(signals.get("gold_spy_ratio_5d_change", float("nan")), 2), r3),
+        "HYG 5d chg %":        (round(signals.get("hyg_5d_change", float("nan")), 2),  r4),
+        "EEM vs SPY 5d %":     (round(signals.get("eem_vs_spy_5d", float("nan")), 2),  r5),
+    }
+
     return RoroResult(
         stance=stance,
         colour=RORO_COLOURS[stance],
         score=score,
-        signals={
-            "VIX 5d change":         round(signals.get("vix_5d_change", float("nan")), 2),
-            "DXY rising (5d)":       r2,
-            "Gold/SPY ratio rising": r3,
-            "HYG falling (5d)":      r4,
-            "EEM vs SPY (5d)":       round(signals.get("eem_vs_spy_5d", float("nan")), 2),
-        },
+        signals={k: v[0] for k, v in _signal_data.items()},
+        votes={k: v[1] for k, v in _signal_data.items()},
     )
