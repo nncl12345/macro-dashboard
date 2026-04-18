@@ -23,17 +23,27 @@ from regime.classifier import REGIME_COLOURS, REGIME_RETURNS
 # Shared styling constants
 # Kept here so all charts have a consistent look without repeating values.
 # -----------------------------------------------------------------------------
-FONT_FAMILY = "Inter, -apple-system, BlinkMacSystemFont, sans-serif"
-FONT_COLOR  = "#000000"
-GRID_COLOR  = "#ebebeb"
-BG_COLOR    = "white"
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    """Convert a hex colour string to rgba() for use in Plotly shape fills."""
+    h = hex_color.lstrip('#')
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
 
-# Colour palette for chart lines
-COLOR_PRIMARY   = "#2563EB"   # blue — current data
-COLOR_SECONDARY = "#94a3b8"   # grey — historical comparison
-COLOR_CPI       = "#f97316"   # orange — CPI
-COLOR_CORE_CPI  = "#8b5cf6"   # purple — Core CPI
-COLOR_FED_TARGET = "#ef4444"  # red — Fed 2% target line
+
+FONT_FAMILY = "Inter, -apple-system, BlinkMacSystemFont, sans-serif"
+MONO_FAMILY = "JetBrains Mono, ui-monospace, SFMono-Regular, monospace"
+
+# Dark terminal theme — matches the app background (#080d19) and card surface (#0e1726)
+FONT_COLOR  = "#e2e8f0"   # near-white text on dark bg
+GRID_COLOR  = "#1a2a3a"   # very subtle grid lines — don't compete with data
+BG_COLOR    = "#0e1726"   # chart background matches card surface
+
+# Colour palette for chart lines — vivid enough to pop on dark bg
+COLOR_PRIMARY    = "#60a5fa"   # sky blue — current data
+COLOR_SECONDARY  = "#475569"   # muted slate — historical comparison
+COLOR_CPI        = "#fb923c"   # orange — headline CPI
+COLOR_CORE_CPI   = "#a78bfa"   # purple — Core CPI (stripped of food/energy volatility)
+COLOR_FED_TARGET = "#f87171"   # soft red — Fed 2% target line
 
 def _base_layout(title: str = "", height: int = 380, margin: Optional[dict] = None, **kwargs) -> dict:
     """
@@ -41,27 +51,35 @@ def _base_layout(title: str = "", height: int = 380, margin: Optional[dict] = No
     Applying this to every chart ensures consistent fonts, colours, and margins.
     Pass margin= to override the default.
     """
-    # axis_style is applied to both xaxis and yaxis unless the caller overrides them.
-    # Explicitly setting tickfont and title font forces black text — Plotly's
-    # white theme otherwise renders axis labels in a washed-out grey.
+    # Dark theme: all axis chrome (ticks, lines, zero-lines) uses GRID_COLOR so
+    # they're visible but don't distract from the data traces.
     axis_style = dict(
-        tickfont=dict(color=FONT_COLOR, family=FONT_FAMILY),
-        title_font=dict(color=FONT_COLOR, family=FONT_FAMILY),
+        tickfont=dict(color=FONT_COLOR, family=FONT_FAMILY, size=11),
+        title_font=dict(color=FONT_COLOR, family=FONT_FAMILY, size=12),
+        gridcolor=GRID_COLOR,
+        linecolor=GRID_COLOR,
+        zerolinecolor=GRID_COLOR,
     )
     return dict(
-        title=dict(text=title, font=dict(size=14, color=FONT_COLOR, family=FONT_FAMILY), x=0, xanchor="left"),
+        title=dict(
+            text=title,
+            font=dict(size=13, color="#8899aa", family=FONT_FAMILY, weight=600),
+            x=0,
+            xanchor="left",
+        ),
         font=dict(family=FONT_FAMILY, size=12, color=FONT_COLOR),
         plot_bgcolor=BG_COLOR,
         paper_bgcolor=BG_COLOR,
         height=height,
-        margin=margin if margin is not None else dict(l=50, r=20, t=50, b=40),
+        margin=margin if margin is not None else dict(l=50, r=20, t=45, b=40),
         legend=dict(
             orientation="h",
             yanchor="bottom",
             y=-0.25,
             xanchor="left",
             x=0,
-            font=dict(color=FONT_COLOR, family=FONT_FAMILY),
+            font=dict(color="#8899aa", family=FONT_FAMILY, size=11),
+            bgcolor="rgba(0,0,0,0)",   # transparent — let chart bg show through
         ),
         xaxis=axis_style,
         yaxis=axis_style,
@@ -111,7 +129,7 @@ def plot_yield_curve(current: pd.Series, year_ago: pd.Series) -> go.Figure:
         x=year_ago.index.tolist(),
         y=year_ago.values.tolist(),
         fill="tonexty",
-        fillcolor="rgba(37, 99, 235, 0.08)",  # faint blue fill
+        fillcolor="rgba(96, 165, 250, 0.07)",  # faint blue fill — subtle on dark bg
         line=dict(width=0),
         showlegend=False,
         hoverinfo="skip",
@@ -204,14 +222,16 @@ def plot_regime_heatmap(current_regime: str) -> go.Figure:
     assets  = df.index.tolist()
     z_values = df.values.tolist()  # 2D list of return values for the heatmap
 
-    # Custom diverging colorscale: red (negative) → white (zero) → green (positive)
-    # Using explicit midpoint at 0 ensures white = breakeven return
+    # Custom diverging colorscale: dark red → dark neutral → dark green.
+    # The dark neutral (#1a2a3a) at midpoint (zero return) keeps near-zero cells
+    # consistent with the chart background so they don't "pop" falsely.
+    # Vivid endpoints make the extreme return cells immediately readable.
     colorscale = [
-        [0.0,  "#d32f2f"],   # deep red  — very negative (e.g. -25%)
-        [0.35, "#ef9a9a"],   # light red
-        [0.5,  "#ffffff"],   # white     — zero return
-        [0.65, "#a5d6a7"],   # light green
-        [1.0,  "#1b5e20"],   # deep green — very positive (e.g. +22%)
+        [0.0,  "#b91c1c"],   # vivid red    — worst negative (e.g. SPX -25% in bust)
+        [0.35, "#4a0f0f"],   # dark red
+        [0.5,  "#1a2a3a"],   # dark neutral — zero return blends with chart bg
+        [0.65, "#0d3321"],   # dark green
+        [1.0,  "#16a34a"],   # vivid green  — best positive (e.g. Gold +22% in stagflation)
     ]
 
     fig = go.Figure(data=go.Heatmap(
@@ -219,15 +239,18 @@ def plot_regime_heatmap(current_regime: str) -> go.Figure:
         x=regimes,
         y=assets,
         colorscale=colorscale,
-        zmid=0,              # anchor the midpoint colour (white) at zero
+        zmid=0,              # anchor the midpoint colour at zero
         text=[[f"{v:+.0f}%" for v in row] for row in z_values],
         texttemplate="%{text}",
-        textfont=dict(size=13, color=FONT_COLOR),
+        textfont=dict(size=13, color=FONT_COLOR, family=MONO_FAMILY),
         showscale=True,
         colorbar=dict(
-            title=dict(text="Ann. Return %", side="right"),
+            title=dict(text="Ann. Return %", side="right", font=dict(color="#8899aa", size=11)),
             ticksuffix="%",
-            thickness=12,
+            tickfont=dict(color="#8899aa", size=10),
+            thickness=10,
+            outlinewidth=0,
+            bgcolor=BG_COLOR,
         ),
         hovertemplate="<b>%{y}</b> in <b>%{x}</b><br>Avg annualised return: %{text}<extra></extra>",
     ))
@@ -241,6 +264,8 @@ def plot_regime_heatmap(current_regime: str) -> go.Figure:
         # Plotly shapes use paper coordinates for x when xref='x domain',
         # but it's simpler to use the category index directly.
         # x0/x1 are offset by 0.5 to frame the column exactly.
+        # The subtle tint (alpha=0.12) sits on top of the cell colours without
+        # drowning them out — the green/red heatmap still reads through clearly.
         fig.add_shape(
             type="rect",
             x0=col_idx - 0.5,
@@ -248,7 +273,7 @@ def plot_regime_heatmap(current_regime: str) -> go.Figure:
             y0=-0.5,
             y1=len(assets) - 0.5,
             line=dict(color=regime_colour, width=3),
-            fillcolor="rgba(0,0,0,0)",   # transparent fill — border only
+            fillcolor=_hex_to_rgba(regime_colour, 0.12),
         )
 
         # Label above the highlighted column
@@ -301,38 +326,49 @@ def plot_market_snapshot(df: pd.DataFrame) -> go.Figure:
         else:
             cell_values.append(table_df[col].tolist())
 
-    # Colour each % cell: green if positive, red if negative, grey if zero/NaN
-    def cell_colours(col_name: str) -> list[str]:
-        """Return a list of background hex colours for one column."""
+    # Dark theme table: uniform dark cell backgrounds, with colored *text* on %
+    # columns instead of colored backgrounds. This is the Bloomberg/terminal
+    # convention — green numbers on dark, red numbers on dark. Much more readable
+    # than the light-bg tint approach used in the old white theme.
+    def cell_fill(col_name: str) -> list[str]:
+        """Uniform dark fill — colour information carried by text, not bg."""
+        # Alternate very subtle row tinting for scannability
+        return [BG_COLOR if i % 2 == 0 else "#0c1520" for i in range(len(table_df))]
+
+    def cell_font_color(col_name: str) -> list[str]:
+        """Return per-cell font colours: green/red for % cols, default elsewhere."""
         if col_name not in pct_cols:
-            return ["#f8f8f8"] * len(table_df)
-        colours = []
+            return [FONT_COLOR] * len(table_df)
+        colors = []
         for v in table_df[col_name]:
             if v > 0:
-                colours.append("#d4edda")   # light green
+                colors.append("#34d399")   # emerald green — positive return
             elif v < 0:
-                colours.append("#f8d7da")   # light red
+                colors.append("#f87171")   # soft red      — negative return
             else:
-                colours.append("#f8f8f8")   # neutral grey
-        return colours
+                colors.append("#8899aa")   # muted         — flat
+        return colors
 
-    fill_colors = [cell_colours(col) for col in columns]
+    fill_colors      = [cell_fill(col) for col in columns]
+    font_color_cells = [cell_font_color(col) for col in columns]
 
     fig = go.Figure(data=go.Table(
         columnwidth=[80, 80, 60, 60, 60, 70],
         header=dict(
-            values=columns,
-            fill_color="#1e3a5f",         # dark navy header
-            font=dict(color="white", size=13, family=FONT_FAMILY, weight="bold"),
+            values=columns,               # plain strings — no HTML tags
+            fill_color="#1e3a5f",         # distinct navy — clearly separates header from cells
+            font=dict(color="#ffffff", size=12, family=FONT_FAMILY),
             align="center",
-            height=40,
+            height=38,
+            line=dict(color=GRID_COLOR, width=1),
         ),
         cells=dict(
             values=cell_values,
             fill_color=fill_colors,
-            font=dict(color=FONT_COLOR, size=12, family=FONT_FAMILY),
+            font=dict(color=font_color_cells, size=12, family=MONO_FAMILY),
             align=["left"] + ["center"] * (len(columns) - 1),
-            height=32,
+            height=30,
+            line=dict(color=GRID_COLOR, width=0.5),
         ),
     ))
 

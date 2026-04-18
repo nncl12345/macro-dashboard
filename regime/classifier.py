@@ -37,10 +37,13 @@ THRESHOLDS: dict[str, float] = {
 # Used consistently across the regime flag, charts, and heatmap.
 # -----------------------------------------------------------------------------
 REGIME_COLOURS: dict[str, str] = {
-    "Stagflation":      "#E05252",  # red   — rising inflation, falling growth
-    "Overheating":      "#F5A623",  # amber — rising inflation, rising growth
-    "Goldilocks":       "#4CAF50",  # green — falling inflation, rising growth
-    "Deflation/Bust":   "#5B9BD5",  # blue  — falling inflation, falling growth
+    # Vivid neon palette — chosen for legibility on the dark (#080d19) background.
+    # Each colour is distinct in both hue and luminance so they can't be confused
+    # even at small sizes (e.g. the badge chips next to the regime flag).
+    "Stagflation":      "#ff5757",  # vivid red
+    "Overheating":      "#fbbf24",  # vivid amber / gold
+    "Goldilocks":       "#34d399",  # vivid emerald
+    "Deflation/Bust":   "#60a5fa",  # vivid sky blue
 }
 
 
