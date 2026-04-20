@@ -18,19 +18,23 @@ import streamlit as st
 
 from charts.plots import (
     plot_cpi_trend,
+    plot_episode_table,
     plot_market_snapshot,
     plot_regime_heatmap,
     plot_yield_curve,
 )
 from data.fetcher import (
+    compute_episode_returns,
+    compute_regime_returns,
     fetch_cpi_trend,
     fetch_kpi_data,
     fetch_macro_inputs,
     fetch_market_snapshot,
+    fetch_regime_price_history,
     fetch_roro_signals,
     fetch_yield_curve,
 )
-from regime.classifier import REGIME_COLOURS, classify_regime, classify_monetary_cycle, classify_roro
+from regime.classifier import REGIME_COLOURS, REGIME_RETURNS, classify_regime, classify_monetary_cycle, classify_roro
 
 # -----------------------------------------------------------------------------
 # Page config — must be the first Streamlit call in the script.
@@ -137,6 +141,12 @@ with st.spinner("Loading live macro data…"):
     cpi_df         = fetch_cpi_trend()
     snapshot_df    = fetch_market_snapshot()
     roro_signals   = fetch_roro_signals()
+    # Historical price data for the regime heatmap — fetched once, cached 1hr.
+    # compute_regime_returns() is pure compute (no cache) so it runs on each load
+    # but is fast — it only slices the already-fetched DataFrame.
+    regime_prices  = fetch_regime_price_history()
+    regime_returns, episode_counts = compute_regime_returns(regime_prices, fallback=REGIME_RETURNS)
+    episode_rows   = compute_episode_returns(regime_prices, fallback=REGIME_RETURNS)
 
 # Run all three classifiers on the live signals
 result        = classify_regime(macro_signals)
@@ -335,7 +345,22 @@ st.divider()
 # =============================================================================
 
 st.plotly_chart(
-    plot_regime_heatmap(result.regime),
+    plot_regime_heatmap(result.regime, regime_returns=regime_returns, episode_counts=episode_counts),
+    use_container_width=True,
+    theme=None,
+)
+
+st.divider()
+
+
+# =============================================================================
+# ROW 3b — Episode returns table (full width)
+# The heatmap shows regime averages; this table shows the named events behind
+# them so you can see exactly what happened during each historical episode.
+# =============================================================================
+
+st.plotly_chart(
+    plot_episode_table(episode_rows),
     use_container_width=True,
     theme=None,
 )

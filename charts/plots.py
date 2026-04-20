@@ -11,12 +11,12 @@
 #   plot_market_snapshot()— price + % change table for all tracked assets
 # =============================================================================
 
-from typing import Optional
+from typing import Optional, Union
 
 import pandas as pd
 import plotly.graph_objects as go
 
-from regime.classifier import REGIME_COLOURS, REGIME_RETURNS
+from regime.classifier import REGIME_COLOURS
 
 
 # -----------------------------------------------------------------------------
@@ -210,17 +210,35 @@ def plot_cpi_trend(df: pd.DataFrame) -> go.Figure:
 # Inputs:
 #   current_regime — string, e.g. "Overheating" (from RegimeResult.regime)
 # -----------------------------------------------------------------------------
-def plot_regime_heatmap(current_regime: str) -> go.Figure:
-    """Return a Plotly heatmap of asset returns by regime, current regime highlighted."""
+def plot_regime_heatmap(
+    current_regime: str,
+    regime_returns: dict[str, dict[str, float]],
+    episode_counts: dict[str, dict[str, int]],
+) -> go.Figure:
+    """
+    Return a Plotly heatmap of asset returns by regime, current regime highlighted.
 
-    # Build a DataFrame from the REGIME_RETURNS dict in classifier.py.
+    Args:
+        current_regime: The active regime label (e.g. 'Overheating').
+        regime_returns: {regime: {asset: avg_annualised_pct}} — computed or fallback.
+        episode_counts: {regime: {asset: n}} — shown in hover tooltips.
+    """
+
+    # Build a DataFrame from the computed returns dict.
     # Rows = assets (Gold, Oil, SPX...), Cols = regimes.
-    df = pd.DataFrame(REGIME_RETURNS).T          # regimes as rows
-    df = df.T                                     # transpose: assets as rows, regimes as cols
+    df = pd.DataFrame(regime_returns).T          # regimes as rows
+    df = df.T                                    # transpose: assets as rows, regimes as cols
 
-    regimes = df.columns.tolist()
-    assets  = df.index.tolist()
+    regimes  = df.columns.tolist()
+    assets   = df.index.tolist()
     z_values = df.values.tolist()  # 2D list of return values for the heatmap
+
+    # Build a matching 2D list of episode counts for the hover tooltip.
+    # n=0 means the value is a hardcoded fallback, not from real data.
+    n_values = [
+        [episode_counts.get(regime, {}).get(asset, 0) for regime in regimes]
+        for asset in assets
+    ]
 
     # Custom diverging colorscale: dark red → dark neutral → dark green.
     # The dark neutral (#1a2a3a) at midpoint (zero return) keeps near-zero cells
@@ -243,6 +261,7 @@ def plot_regime_heatmap(current_regime: str) -> go.Figure:
         text=[[f"{v:+.0f}%" for v in row] for row in z_values],
         texttemplate="%{text}",
         textfont=dict(size=13, color=FONT_COLOR, family=MONO_FAMILY),
+        customdata=n_values,
         showscale=True,
         colorbar=dict(
             title=dict(text="Ann. Return %", side="right", font=dict(color="#8899aa", size=11)),
@@ -252,7 +271,12 @@ def plot_regime_heatmap(current_regime: str) -> go.Figure:
             outlinewidth=0,
             bgcolor=BG_COLOR,
         ),
-        hovertemplate="<b>%{y}</b> in <b>%{x}</b><br>Avg annualised return: %{text}<extra></extra>",
+        # %{customdata} shows episode count; n=0 means hardcoded fallback was used
+        hovertemplate=(
+            "<b>%{y}</b> in <b>%{x}</b><br>"
+            "Avg annualised return: %{text}<br>"
+            "Episodes: %{customdata}<extra></extra>"
+        ),
     ))
 
     # Highlight the current regime with a coloured border box.
@@ -374,6 +398,112 @@ def plot_market_snapshot(df: pd.DataFrame) -> go.Figure:
 
     fig.update_layout(
         **_base_layout(title="Market Snapshot", height=320, margin=dict(l=10, r=10, t=50, b=10)),
+    )
+
+    return fig
+
+
+# -----------------------------------------------------------------------------
+# plot_episode_table()
+#
+# A Plotly table showing per-episode asset returns, grouped by regime.
+# Each named event (e.g. "Global Financial Crisis") is a row, with annualised
+# returns for Gold, Oil, SPX, TLT, DXY, EM shown in green/red.
+# A "Regime Average" summary row follows each group.
+#
+# This sits below the heatmap and is the granular view — the heatmap shows
+# the cross-regime picture, this table shows the specific events behind it.
+#
+# Input:
+#   episode_data — list of dicts from compute_episode_returns() in fetcher.py
+# -----------------------------------------------------------------------------
+def plot_episode_table(episode_data: list[dict]) -> go.Figure:
+    """Return a Plotly table of per-episode asset returns, grouped by regime."""
+
+    assets = ["Gold", "Oil", "SPX", "TLT", "DXY", "EM"]
+
+    # Build cell value and colour lists (one list per column)
+    col_regime   = [r["regime"]     for r in episode_data]
+    col_name     = [r["name"]       for r in episode_data]
+    col_period   = [r["period"]     for r in episode_data]
+
+    def _fmt_ret(v: Optional[float]) -> str:
+        if v is None:
+            return "—"
+        return f"{v:+.1f}%"
+
+    def _ret_color(v: Optional[float]) -> str:
+        if v is None:
+            return "#334155"   # very muted — no data
+        if v > 0:
+            return "#34d399"   # emerald green
+        if v < 0:
+            return "#f87171"   # soft red
+        return "#8899aa"
+
+    # Per-row fill colours: average rows get a distinct background
+    def _fill(row: dict) -> str:
+        return "#131f35" if row["is_average"] else BG_COLOR
+
+    fill_col = [_fill(r) for r in episode_data]
+
+    # Regime name column — colour text to match regime colour; blank on average rows
+    regime_text   = [r["regime"] if not r["is_average"] else "" for r in episode_data]
+    regime_colors = [REGIME_COLOURS.get(r["regime"], FONT_COLOR) for r in episode_data]
+
+    # Episode name: bold the average rows via HTML isn't supported in Plotly tables,
+    # so we use ALL CAPS for average rows to distinguish them visually.
+    name_text   = [r["name"].upper() if r["is_average"] else r["name"] for r in episode_data]
+    name_colors = ["#8899aa" if r["is_average"] else FONT_COLOR for r in episode_data]
+
+    # Build per-column formatted values and per-cell font colours for return columns
+    asset_vals   = {a: [_fmt_ret(r.get(a)) for r in episode_data] for a in assets}
+    asset_colors = {a: [_ret_color(r.get(a)) for r in episode_data] for a in assets}
+
+    fig = go.Figure(data=go.Table(
+        columnwidth=[90, 130, 105, 55, 55, 55, 55, 55, 55],
+        header=dict(
+            values=["Regime", "Episode", "Period"] + assets,
+            fill_color="#1e3a5f",
+            font=dict(color="#ffffff", size=12, family=FONT_FAMILY),
+            align=["left", "left", "left"] + ["center"] * len(assets),
+            height=36,
+            line=dict(color=GRID_COLOR, width=1),
+        ),
+        cells=dict(
+            values=[
+                regime_text,
+                name_text,
+                col_period,
+            ] + [asset_vals[a] for a in assets],
+            fill_color=[
+                fill_col,
+                fill_col,
+                fill_col,
+            ] + [fill_col] * len(assets),
+            font=dict(
+                color=[
+                    regime_colors,
+                    name_colors,
+                    ["#8899aa"] * len(episode_data),  # period: always muted
+                ] + [asset_colors[a] for a in assets],
+                size=11,
+                family=MONO_FAMILY,
+            ),
+            align=["left", "left", "left"] + ["center"] * len(assets),
+            height=28,
+            line=dict(color=GRID_COLOR, width=0.5),
+        ),
+    ))
+
+    # Height: 36 header + 28 per row + small margin
+    table_height = 36 + len(episode_data) * 28 + 60
+    fig.update_layout(
+        **_base_layout(
+            title="Historical Episode Returns (Ann. %)",
+            height=table_height,
+            margin=dict(l=10, r=10, t=50, b=10),
+        )
     )
 
     return fig

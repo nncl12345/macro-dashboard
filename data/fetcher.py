@@ -12,6 +12,7 @@
 
 import os
 from datetime import datetime, timedelta
+from typing import Optional
 
 import pandas as pd
 import streamlit as st
@@ -489,6 +490,315 @@ def fetch_roro_signals() -> dict[str, float]:
         signals["eem_vs_spy_5d"] = round((eem_ret - spy_ret) * 100, 3)
 
     return signals
+
+
+# -----------------------------------------------------------------------------
+# fetch_regime_price_history()
+#
+# The data backbone for the historical performance heatmap. Fetches long-run
+# monthly price history for all six regime assets from multiple sources:
+#
+#   Gold  — FRED GOLDAMGBD228NLBM (London AM fixing, daily from 1968)
+#   Oil   — FRED WTISPLC (WTI spot price, monthly from 1946)
+#   SPX   — yfinance ^GSPC
+#   TLT   — yfinance TLT (from 2002-07; no pre-2002 proxy — see episodes.py)
+#   DXY   — yfinance DX-Y.NYB
+#   EM    — yfinance VEIEX (1994-2003) stitched to EEM (2003-present)
+#
+# Returns a single unified DataFrame resampled to month-end, which
+# compute_regime_returns() slices into canonical episode windows.
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=3600)
+def fetch_regime_price_history() -> pd.DataFrame:
+    """
+    Return monthly historical prices for all six regime assets (1946–present).
+    Columns: ['Gold', 'Oil', 'SPX', 'TLT', 'DXY', 'EM']. Index: month-end dates.
+    """
+    fred = _get_fred_client()
+
+    # -------------------------------------------------------------------------
+    # FRED: Gold and Oil — attempt full-history fetch, fall back to yfinance.
+    #
+    # GOLDAMGBD228NLBM (London AM fixing, from 1968) and WTISPLC (WTI spot,
+    # from 1946) are ideal for covering the 1970s stagflation episodes, but
+    # some FRED series IDs visible on the website are locked behind data
+    # licensing agreements and return 400 from the API. If either fetch fails,
+    # we fall back to yfinance GC=F / CL=F and accept reduced historical depth.
+    # The episode-slicing logic in compute_regime_returns() handles missing data
+    # gracefully (empty slices are skipped, n=0 triggers the hardcoded fallback).
+    # -------------------------------------------------------------------------
+    try:
+        gold_daily   = fred.get_series("GOLDAMGBD228NLBM").dropna()
+        gold_monthly = gold_daily.resample("ME").last()
+    except Exception:
+        gold_monthly = pd.Series(dtype=float)   # populated from yfinance GC=F below
+
+    try:
+        oil_raw      = fred.get_series("WTISPLC").dropna()
+        oil_monthly  = oil_raw.resample("ME").last()
+    except Exception:
+        oil_monthly = pd.Series(dtype=float)    # populated from yfinance CL=F below
+
+    # -------------------------------------------------------------------------
+    # yfinance: SPX, TLT, DXY, VEIEX, EEM — plus GC=F and CL=F as fallbacks
+    # for Gold and Oil if the FRED series above were unavailable.
+    # -------------------------------------------------------------------------
+    yf_tickers = ["^GSPC", "TLT", "DX-Y.NYB", "VEIEX", "EEM", "GC=F", "CL=F"]
+    raw = yf.download(
+        yf_tickers,
+        start="1970-01-01",
+        auto_adjust=True,
+        progress=False,
+    )
+
+    # Multi-ticker download gives MultiIndex columns: (price_type, ticker).
+    # Extracting "Close" gives a single-level DataFrame with ticker symbols.
+    closes = raw["Close"]
+    closes_monthly = closes.resample("ME").last()
+
+    # Helper to safely extract a column from the monthly closes DataFrame
+    def _col(ticker: str) -> pd.Series:
+        return closes_monthly[ticker] if ticker in closes_monthly.columns else pd.Series(dtype=float)
+
+    # -------------------------------------------------------------------------
+    # EM series: stitch VEIEX (pre-2003-04) → EEM (post-2003-04).
+    # Normalise EEM to VEIEX level at the stitch month-end so there's no
+    # artificial level jump — preserving relative returns in both eras.
+    #
+    # Why this matters: if we didn't normalise, the level discontinuity at the
+    # stitch date would distort returns for any episode that starts immediately
+    # after the join. (None of our current episodes span the join, but it's
+    # correct practice regardless.)
+    # -------------------------------------------------------------------------
+    stitch_ts = pd.Timestamp("2003-04-14") + pd.offsets.MonthEnd(0)
+
+    veiex = _col("VEIEX")
+    eem   = _col("EEM")
+
+    if not veiex.empty and not eem.empty:
+        # Compute scale factor so EEM equals VEIEX at the stitch month
+        v_level = veiex.get(stitch_ts)
+        e_level = eem.get(stitch_ts)
+        scale = (v_level / e_level) if (pd.notna(v_level) and pd.notna(e_level) and e_level != 0) else 1.0
+
+        em_series = veiex.copy()
+        eem_scaled = eem * scale
+        # Overwrite with scaled EEM for all months from the stitch date onward
+        em_series.update(eem_scaled[eem_scaled.index >= stitch_ts])
+    else:
+        em_series = veiex if not veiex.empty else eem
+
+    # -------------------------------------------------------------------------
+    # Assemble and return the unified monthly price DataFrame.
+    # Use FRED series for Gold/Oil where available; yfinance as fallback.
+    # -------------------------------------------------------------------------
+    gold_col = gold_monthly if not gold_monthly.empty else _col("GC=F")
+    oil_col  = oil_monthly  if not oil_monthly.empty  else _col("CL=F")
+
+    df = pd.DataFrame({
+        "Gold": gold_col,
+        "Oil":  oil_col,
+        "SPX":  _col("^GSPC"),
+        "TLT":  _col("TLT"),
+        "DXY":  _col("DX-Y.NYB"),
+        "EM":   em_series,
+    })
+
+    df.index = pd.to_datetime(df.index)
+    return df.sort_index()
+
+
+# -----------------------------------------------------------------------------
+# compute_regime_returns()
+#
+# Takes the monthly price history from fetch_regime_price_history() and the
+# canonical episode windows from regime/episodes.py, and computes average
+# annualised returns per (regime, asset).
+#
+# This is a pure compute function — no network calls, no caching needed.
+# The expensive I/O is already cached upstream in fetch_regime_price_history().
+#
+# Annualisation formula (per episode):
+#   annualised_return = ((end_price / start_price) ^ (365.25 / days)) - 1
+#
+# Averaging: simple arithmetic mean across valid episodes. Each episode counts
+# once regardless of its duration — this is labelled regime attribution, not
+# time-weighted portfolio accounting.
+#
+# Fallback: if an asset has zero valid episodes for a regime (e.g. TLT in
+# the pre-2002 stagflation episodes), the hardcoded REGIME_RETURNS value is
+# used so the heatmap always shows something.
+# -----------------------------------------------------------------------------
+def compute_regime_returns(
+    prices: pd.DataFrame,
+    fallback: dict[str, dict[str, float]],
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, int]]]:
+    """
+    Compute average annualised returns per regime from historical episode windows.
+
+    Args:
+        prices:   Monthly price DataFrame from fetch_regime_price_history().
+        fallback: Hardcoded REGIME_RETURNS dict — used when n=0 for an asset.
+
+    Returns:
+        regime_returns  — {regime: {asset: avg_annualised_pct}}
+        episode_counts  — {regime: {asset: n_valid_episodes}}
+    """
+    from regime.episodes import REGIME_EPISODES, ASSET_SOURCES
+
+    assets  = list(ASSET_SOURCES.keys())
+    regimes = list(REGIME_EPISODES.keys())
+
+    regime_returns: dict[str, dict[str, float]] = {}
+    episode_counts: dict[str, dict[str, int]]   = {}
+
+    for regime in regimes:
+        regime_returns[regime] = {}
+        episode_counts[regime] = {}
+        episodes = REGIME_EPISODES[regime]
+
+        for asset in assets:
+            available_from = pd.Timestamp(ASSET_SOURCES[asset]["available_from"])
+
+            if asset not in prices.columns:
+                # Column missing entirely — use fallback
+                regime_returns[regime][asset] = fallback.get(regime, {}).get(asset, 0.0)
+                episode_counts[regime][asset] = 0
+                continue
+
+            price_series = prices[asset].dropna()
+            valid_returns: list[float] = []
+
+            for (start_str, end_str) in episodes:
+                start_ts = pd.Timestamp(start_str)
+                # end_str is month-start (e.g. "2009-06") — push to month-end
+                end_ts = pd.Timestamp(end_str) + pd.offsets.MonthEnd(0)
+
+                # Skip episodes that pre-date this asset's data availability
+                if start_ts < available_from:
+                    continue
+
+                # Slice to the episode window and drop any NaN gaps
+                episode_prices = price_series.loc[
+                    (price_series.index >= start_ts) &
+                    (price_series.index <= end_ts)
+                ].dropna()
+
+                if len(episode_prices) < 2:
+                    continue
+
+                start_price = float(episode_prices.iloc[0])
+                end_price   = float(episode_prices.iloc[-1])
+
+                if start_price <= 0:
+                    continue
+
+                # Use actual calendar span between first and last observed price
+                # (not the nominal episode dates) so short data gaps don't inflate
+                # annualised returns
+                days = (episode_prices.index[-1] - episode_prices.index[0]).days
+                if days <= 0:
+                    continue
+
+                total_return = end_price / start_price - 1
+                annualised   = ((1 + total_return) ** (365.25 / days) - 1) * 100
+                valid_returns.append(annualised)
+
+            if not valid_returns:
+                # No valid episodes — fall back to hardcoded seed value
+                regime_returns[regime][asset] = fallback.get(regime, {}).get(asset, 0.0)
+                episode_counts[regime][asset] = 0
+            else:
+                avg = sum(valid_returns) / len(valid_returns)
+                regime_returns[regime][asset] = round(avg, 1)
+                episode_counts[regime][asset] = len(valid_returns)
+
+    return regime_returns, episode_counts
+
+
+# -----------------------------------------------------------------------------
+# compute_episode_returns()
+#
+# Like compute_regime_returns() but returns one row per individual episode
+# rather than regime-level averages. Used for the episode detail table that
+# shows the specific named events (GFC, COVID crash, Volcker era, etc.) and
+# the actual annualised return of each asset during that episode.
+#
+# Also appends a regime-average row after each group so the table contains
+# both granular and summary information in one view.
+#
+# Returns a list of dicts, each representing one table row:
+#   {
+#     "regime":     "Deflation/Bust",
+#     "name":       "Global Financial Crisis",
+#     "period":     "Dec 2007 – Jun 2009",
+#     "is_average": False,
+#     "Gold": 18.4, "Oil": -52.1, "SPX": -38.6, "TLT": 28.3, "DXY": 7.1, "EM": -47.2
+#   }
+# Values are annualised % returns; None means no data for that asset/episode.
+# -----------------------------------------------------------------------------
+def compute_episode_returns(
+    prices: pd.DataFrame,
+    fallback: dict[str, dict[str, float]],
+) -> list[dict]:
+    """
+    Return per-episode annualised returns for the episode detail table.
+    Appends a regime-average row after each episode group.
+    """
+    from datetime import datetime
+    from regime.episodes import REGIME_EPISODES, EPISODE_NAMES, ASSET_SOURCES
+
+    assets  = list(ASSET_SOURCES.keys())
+    rows: list[dict] = []
+
+    def _fmt_period(start_str: str, end_str: str) -> str:
+        """Convert '1973-10'/'1975-03' to 'Oct 1973 – Mar 1975'."""
+        s = datetime.strptime(start_str, "%Y-%m").strftime("%b %Y")
+        e = datetime.strptime(end_str,   "%Y-%m").strftime("%b %Y")
+        return f"{s} – {e}"
+
+    for regime, episodes in REGIME_EPISODES.items():
+        names = EPISODE_NAMES.get(regime, [])
+        regime_sums:  dict[str, list[float]] = {a: [] for a in assets}
+
+        for i, (start_str, end_str) in enumerate(episodes):
+            name      = names[i] if i < len(names) else f"Episode {i + 1}"
+            period    = _fmt_period(start_str, end_str)
+            start_ts  = pd.Timestamp(start_str)
+            end_ts    = pd.Timestamp(end_str) + pd.offsets.MonthEnd(0)
+            row: dict = {"regime": regime, "name": name, "period": period, "is_average": False}
+
+            for asset in assets:
+                available_from = pd.Timestamp(ASSET_SOURCES[asset]["available_from"])
+                value = None  # type: Optional[float]
+
+                if asset in prices.columns and start_ts >= available_from:
+                    series = prices[asset].dropna()
+                    ep     = series.loc[(series.index >= start_ts) & (series.index <= end_ts)].dropna()
+
+                    if len(ep) >= 2 and ep.iloc[0] > 0:
+                        days = (ep.index[-1] - ep.index[0]).days
+                        if days > 0:
+                            total  = ep.iloc[-1] / ep.iloc[0] - 1
+                            value  = round(((1 + total) ** (365.25 / days) - 1) * 100, 1)
+
+                row[asset] = value
+                if value is not None:
+                    regime_sums[asset].append(value)
+
+            rows.append(row)
+
+        # Regime-average summary row
+        avg_row: dict = {"regime": regime, "name": "Regime Average", "period": "", "is_average": True}
+        for asset in assets:
+            vals = regime_sums[asset]
+            if vals:
+                avg_row[asset] = round(sum(vals) / len(vals), 1)
+            else:
+                avg_row[asset] = fallback.get(regime, {}).get(asset)
+        rows.append(avg_row)
+
+    return rows
 
 
 # -----------------------------------------------------------------------------
