@@ -1,18 +1,19 @@
 # =============================================================================
 # regime/backtest.py
 #
-# Backtest V1 — validates the Layer 1 regime classifier against a hand-labelled
-# list of historical episodes from 1974 onward. For each episode we take the
-# midpoint month, reconstruct a point-in-time signals dict from fetch_historical_panel(),
-# run classify_regime(), and compare the output to the expected label.
+# Backtest V2 — validates the Layer 1 regime classifier against a hand-labelled
+# list of historical episodes from 1974 onward. For each episode we sample the
+# classifier at every month in the window, reconstructing a point-in-time
+# signals dict from fetch_historical_panel() and running classify_regime().
+# Episode verdict is the *plurality* of the monthly calls (majority vote).
 #
-# Output: a DataFrame with one row per episode (Episode | Period | Expected |
-# Classifier | Hit) plus a hit-rate summary (full hits vs partial vs misses).
+# Why monthly plurality (not midpoint): a 2.5-year episode isn't a single
+# month — the classifier will legitimately drift as signals turn. A midpoint
+# sample is a coin-flip on transition months. Plurality voting gives the
+# expected regime room to dominate the window even if one or two months miss.
 #
-# Why midpoint (not rolling): V1 keeps the signal low — one representative
-# sample per episode. Picking midpoints avoids edge effects where the regime
-# is still transitioning. V2 could roll monthly across each episode window
-# and report regime-share rather than a single label.
+# Output: a DataFrame with one row per episode (Episode | Period | Months |
+# Expected | Plurality | Share | Hit) plus a hit-rate summary.
 #
 # Data availability (binding constraints, affects pre-2003 accuracy):
 #   DGS2 / T10Y2Y   from 1976
@@ -179,64 +180,87 @@ def build_signals_at(date: pd.Timestamp, panel: dict[str, pd.Series]) -> dict[st
 
 
 # -----------------------------------------------------------------------------
-# _episode_midpoint()
-# Return the calendar midpoint between an episode's start month and end month.
-# Month-end on the end side so short episodes (1-3 months) still get a sensible
-# sample date rather than collapsing to the start.
+# _episode_months()
+# Return the list of month-end timestamps spanning an episode (inclusive).
+# Sampling month-end ensures the latest monthly FRED release for that month
+# is available (CPI, PPI, INDPRO all publish mid-following-month but .loc[:date]
+# will still pick up the most recent dated observation).
 # -----------------------------------------------------------------------------
-def _episode_midpoint(start_str: str, end_str: str) -> pd.Timestamp:
-    start_ts = pd.Timestamp(start_str)
-    end_ts   = pd.Timestamp(end_str) + pd.offsets.MonthEnd(0)
-    return start_ts + (end_ts - start_ts) / 2
+def _episode_months(start_str: str, end_str: str) -> list[pd.Timestamp]:
+    start_ts = pd.Timestamp(start_str) + pd.offsets.MonthEnd(0)
+    end_ts   = pd.Timestamp(end_str)   + pd.offsets.MonthEnd(0)
+    return list(pd.date_range(start=start_ts, end=end_ts, freq="ME"))
 
 
 # -----------------------------------------------------------------------------
-# _classify_hit()
-# Compare expected vs actual regime. Returns one of:
-#   "Hit"        — full match
-#   "Partial"    — one of growth/inflation axes matches, other doesn't
-#   "Miss"       — both axes wrong (i.e. diagonal opposite quadrant)
-#   "No data"    — classifier returned Insufficient data
+# _grade_episode()
+# Given the expected regime and a count of classifier calls across the episode,
+# return a verdict. Plurality voting: the classifier gets credit for being
+# right *most of the time*, not just at a single midpoint.
+#
+#   Hit       — expected regime is the plurality (most common call)
+#   Partial   — expected regime appears in ≥25% of months (visible but not dominant)
+#   Miss      — expected regime appears in <25% of months
+#   No data   — every month returned Insufficient data
 # -----------------------------------------------------------------------------
-def _classify_hit(expected: str, actual: str) -> str:
-    if actual == "Insufficient data":
+def _grade_episode(expected: str, counts: dict[str, int], total: int) -> str:
+    scorable = total - counts.get("Insufficient data", 0)
+    if scorable == 0:
         return "No data"
-    if expected == actual:
+
+    # Plurality excludes no-data months so a handful of early missing-signal
+    # observations don't poison the verdict.
+    scorable_counts = {k: v for k, v in counts.items() if k != "Insufficient data"}
+    plurality = max(scorable_counts, key=scorable_counts.get)
+    expected_share = scorable_counts.get(expected, 0) / scorable
+
+    if plurality == expected:
         return "Hit"
-    if expected in REGIME_AXES and actual in REGIME_AXES:
-        exp_g, exp_i = REGIME_AXES[expected]
-        act_g, act_i = REGIME_AXES[actual]
-        if exp_g == act_g or exp_i == act_i:
-            return "Partial"
+    if expected_share >= 0.25:
+        return "Partial"
     return "Miss"
 
 
 # -----------------------------------------------------------------------------
 # backtest_episodes()
-# Run classifier on the midpoint of each historical episode.
-# Returns a DataFrame with one row per episode.
+# Run classifier at every month of each historical episode and tabulate a
+# plurality verdict. Returns a DataFrame with one row per episode.
 # -----------------------------------------------------------------------------
 def backtest_episodes(panel: dict[str, pd.Series]) -> pd.DataFrame:
-    """Run the classifier at each episode's midpoint and tabulate hits vs misses."""
+    """Run the classifier monthly across each episode window; grade by plurality."""
 
     rows: list[dict] = []
     for label, expected, start, end, rationale in HISTORICAL_EPISODES:
-        mid = _episode_midpoint(start, end)
-        signals = build_signals_at(mid, panel)
-        result: RegimeResult = classify_regime(signals)
-        hit = _classify_hit(expected, result.regime)
+        months = _episode_months(start, end)
+        counts: dict[str, int] = {}
+        for ts in months:
+            signals = build_signals_at(ts, panel)
+            result: RegimeResult = classify_regime(signals)
+            counts[result.regime] = counts.get(result.regime, 0) + 1
+
+        total = len(months)
+        hit = _grade_episode(expected, counts, total)
+
+        # Plurality = most common regime across the window (ignore no-data months
+        # when ranking). Share = plurality's % of scorable months.
+        scorable_counts = {k: v for k, v in counts.items() if k != "Insufficient data"}
+        if scorable_counts:
+            plurality = max(scorable_counts, key=scorable_counts.get)
+            scorable  = sum(scorable_counts.values())
+            share     = scorable_counts[plurality] / scorable * 100
+            exp_share = scorable_counts.get(expected, 0) / scorable * 100
+        else:
+            plurality, share, exp_share = "Insufficient data", 0.0, 0.0
 
         rows.append({
-            "Episode":    label,
-            "Period":     f"{start} → {end}",
-            "Sample":     mid.strftime("%Y-%m"),
-            "Expected":   expected,
-            "Classifier": result.regime,
-            "Hit":        hit,
-            # Keep score breakdown for optional drill-down UI / debugging
-            "G score":    f"{result.growth_score}/{result.growth_available}",
-            "I score":    f"{result.inflation_score}/{result.inflation_available}",
-            "Confidence": result.confidence,
+            "Episode":   label,
+            "Period":    f"{start} → {end}",
+            "Months":    total,
+            "Expected":  expected,
+            "Plurality": plurality,
+            "Share":     f"{share:.0f}%",
+            "Expected %": f"{exp_share:.0f}%",
+            "Hit":       hit,
         })
 
     return pd.DataFrame(rows)
