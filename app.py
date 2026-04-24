@@ -27,6 +27,7 @@ from data.fetcher import (
     compute_episode_returns,
     compute_regime_returns,
     fetch_cpi_trend,
+    fetch_historical_panel,
     fetch_kpi_data,
     fetch_macro_inputs,
     fetch_market_snapshot,
@@ -34,6 +35,7 @@ from data.fetcher import (
     fetch_roro_signals,
     fetch_yield_curve,
 )
+from regime.backtest import backtest_episodes, hit_rate_summary
 from regime.classifier import REGIME_COLOURS, REGIME_RETURNS, classify_regime, classify_monetary_cycle, classify_roro
 
 # -----------------------------------------------------------------------------
@@ -158,7 +160,7 @@ regime_colour = REGIME_COLOURS[result.regime]
 
 
 # =============================================================================
-# ROW 1 — Regime flag + KPI cards
+# HELPERS — reusable UI components
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -194,18 +196,77 @@ def _kpi_card(label: str, value: str, delta: str = "", status: str = "neutral") 
     )
 
 
-# Regime flag on the left, four KPI metrics across the right
-flag_col, kpi1, kpi2, kpi3, kpi4 = st.columns([2, 1, 1, 1, 1])
+def _signal_values(signals: dict) -> tuple[dict, dict]:
+    """Return (growth_values, inflation_values) dicts mapping signal name → driving number.
 
-with flag_col:
+    For boolean threshold signals (e.g. PMI > 50), return the raw value being compared.
+    For acceleration signals (e.g. CPI accelerating), return the delta (current − lag)
+    because the sign of the delta is what the classifier actually checks.
+    """
+    growth = {
+        "PMI > 50":               signals["pmi_proxy"],
+        "LEI rising (MoM)":       signals["lei_mom"],
+        "Claims falling (4w MA)": signals["claims_trend_change"],
+        # Bear steepener = spread widened AND 10y rose; display the 10y move
+        # as the most informative single number behind the vote.
+        "Bear steepener":         signals["yield_10y_change"],
+    }
+    inflation = {
+        "CPI YoY accelerating":      signals["cpi_yoy"] - signals["cpi_yoy_lag"],
+        "Core CPI YoY accelerating": signals["core_cpi_yoy"] - signals["core_cpi_yoy_lag"],
+        "PPI rising (MoM)":          signals["ppi_mom"],
+        "Breakevens rising":         signals["breakeven_5y5y"] - signals["breakeven_5y5y_lag"],
+        "Michigan exp > 3%":         signals["michigan_exp"],
+    }
+    return growth, inflation
+
+
+def _fmt_signal_val(signal_name: str, val: float) -> str:
+    """Format a signal value for display next to its name.
+
+    PMI proxy and Michigan expectations are absolute levels — no sign prefix.
+    Claims trend change is in raw count — format with thousand separators.
+    Everything else is a rate of change where direction matters, so use +/−.
+    """
+    absolute_signals = {"PMI > 50", "Michigan exp > 3%"}
+    if signal_name in absolute_signals:
+        return f"{val:.1f}"
+    if signal_name == "Claims falling (4w MA)":
+        return f"{val:+,.0f}"
+    return f"{val:+.2f}"
+
+
+def _confidence_badge_html(confidence: str, votes_to_flip: int) -> str:
+    """Small pill showing how fragile the regime call is (votes-to-flip)."""
+    colour = {
+        "Fragile":  "#ff5757",   # red — boundary call, single signal could flip it
+        "Moderate": "#fbbf24",   # amber — some buffer, but not robust
+        "Strong":   "#34d399",   # green — firm majority on both axes
+    }[confidence]
+    plural = "s" if votes_to_flip != 1 else ""
+    return (
+        f'<div style="margin-top:0.55rem;">'
+        f'<span style="font-size:0.6rem; font-weight:700; letter-spacing:0.1em;'
+        f' color:#4a5568; text-transform:uppercase; font-family:Inter,sans-serif;">'
+        f'Confidence&nbsp;</span>'
+        f'<span style="font-size:0.72rem; font-weight:600; padding:0.14rem 0.44rem;'
+        f' border-radius:4px; background-color:{colour}18; color:{colour};'
+        f' border:1px solid {colour}50; font-family:\'JetBrains Mono\',monospace;">'
+        f'{confidence} · {votes_to_flip} vote{plural} to flip</span>'
+        f'</div>'
+    )
+
+
+def _regime_flag_html(
+    result,
+    cycle_result,
+    roro_result,
+    regime_colour: str,
+) -> str:
+    """Return the HTML string for the regime flag card (regime + badges + score tally)."""
     cycle_colour = cycle_result.colour
     roro_colour  = roro_result.colour
-
-    # The regime flag is the primary signal on the page. Dark card with a
-    # coloured border that matches the active regime — so the card itself
-    # "glows" the regime colour. Monospace font on the regime label gives
-    # the Bloomberg terminal look.
-    flag_html = (
+    return (
         f'<div style="padding:1rem 1.1rem; border-radius:8px;'
         f' border:1px solid {regime_colour}40; background:#0e1726;'
         f' display:inline-block; min-width:270px;">'
@@ -223,7 +284,6 @@ with flag_col:
 
         f'<div style="display:flex; gap:0.55rem; align-items:flex-start;">'
 
-        # Fed Cycle badge
         f'<div>'
         f'<div style="font-size:0.6rem; font-weight:700; letter-spacing:0.1em;'
         f' color:#4a5568; text-transform:uppercase; margin-bottom:0.18rem;'
@@ -235,7 +295,6 @@ with flag_col:
         f'{cycle_result.stance}</div>'
         f'</div>'
 
-        # RORO badge
         f'<div>'
         f'<div style="font-size:0.6rem; font-weight:700; letter-spacing:0.1em;'
         f' color:#4a5568; text-transform:uppercase; margin-bottom:0.18rem;'
@@ -249,15 +308,30 @@ with flag_col:
 
         f'</div>'
 
-        # Score tally — small, muted, below the badges
+        # Confidence colour: Fragile = red, Moderate = amber, Strong = green.
+        # A Fragile call means the regime would flip if a single signal changed.
+        f'{_confidence_badge_html(result.confidence, result.votes_to_flip)}'
+
         f'<div style="font-size:0.68rem; color:#4a5568; margin-top:0.55rem;'
         f' font-family:Inter,sans-serif;">'
-        f'Growth {result.growth_score}/4 &nbsp;&middot;&nbsp; Inflation {result.inflation_score}/4'
+        f'Growth {result.growth_score}/4 &nbsp;&middot;&nbsp; Inflation {result.inflation_score}/5'
         f'</div>'
 
         f'</div>'
     )
-    st.markdown(flag_html, unsafe_allow_html=True)
+
+
+# =============================================================================
+# ROW 1 — Regime flag + KPI cards
+# =============================================================================
+
+flag_col, kpi1, kpi2, kpi3, kpi4 = st.columns([2, 1, 1, 1, 1])
+
+with flag_col:
+    st.markdown(
+        _regime_flag_html(result, cycle_result, roro_result, regime_colour),
+        unsafe_allow_html=True,
+    )
 
 with kpi1:
     # CPI above 2% target = bad (red), below = good (green)
@@ -390,17 +464,21 @@ st.plotly_chart(
 with st.expander("📋  Signal breakdown — what drove this regime classification?"):
     g_col, i_col, m_col, r_col = st.columns(4)
 
+    live_g_vals, live_i_vals = _signal_values(macro_signals)
+
     with g_col:
         st.markdown(f"**Layer 1 — Growth: {result.growth_score}/4**")
         for signal, fired in result.growth_signals.items():
             icon = "✅" if fired else "❌"
-            st.markdown(f"{icon} {signal}")
+            val_str = _fmt_signal_val(signal, live_g_vals[signal])
+            st.markdown(f"{icon} {signal} `{val_str}`")
 
     with i_col:
-        st.markdown(f"**Layer 1 — Inflation: {result.inflation_score}/4**")
+        st.markdown(f"**Layer 1 — Inflation: {result.inflation_score}/5**")
         for signal, fired in result.inflation_signals.items():
             icon = "✅" if fired else "❌"
-            st.markdown(f"{icon} {signal}")
+            val_str = _fmt_signal_val(signal, live_i_vals[signal])
+            st.markdown(f"{icon} {signal} `{val_str}`")
 
     with m_col:
         st.markdown(f"**Layer 2 — Monetary Cycle: {cycle_result.stance}**")
@@ -420,3 +498,396 @@ with st.expander("📋  Signal breakdown — what drove this regime classificati
             # Format with explicit + sign so direction is unambiguous at a glance
             val_str = f"{val:+.2f}" if val == val else "n/a"  # nan check
             st.markdown(f"{icon} **{key}**: {val_str} — {label}")
+
+
+# =============================================================================
+# SCENARIO BUILDER
+# Lets you override any input signal and see the resulting regime in real time.
+# Pre-populated from live data — tweak a slider and the flag updates instantly.
+#
+# For acceleration-check inputs (CPI lag, breakeven lag, real yield lag) we
+# expose a "3-month change" slider and derive: lag = current − delta.
+# This maps to how analysts think: "CPI is X% and has risen Y pp in 3 months."
+# =============================================================================
+
+st.divider()
+st.markdown(
+    '<div style="font-size:1.1rem; font-weight:700; color:#e2e8f0; letter-spacing:0.04em;'
+    ' font-family:Inter,sans-serif; margin-bottom:0.1rem;">🔮  Scenario Builder</div>'
+    '<div style="font-size:0.78rem; color:#4a5568; font-family:Inter,sans-serif;'
+    ' margin-bottom:1.2rem;">Adjust any signal below — the regime flags update instantly.</div>',
+    unsafe_allow_html=True,
+)
+
+# --- Input columns (three layers side by side) ---
+l1g_col, l1i_col, l2_col, l3_col = st.columns(4)
+
+with l1g_col:
+    st.markdown(
+        '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
+        ' text-transform:uppercase; margin-bottom:0.6rem; font-family:Inter,sans-serif;">'
+        'Layer 1 — Growth</div>',
+        unsafe_allow_html=True,
+    )
+    wi_pmi = st.slider(
+        "PMI proxy (>50 = expanding)",
+        min_value=20.0, max_value=75.0,
+        value=float(macro_signals["pmi_proxy"]),
+        step=0.5,
+        help="INDPRO-derived PMI equivalent. Above 50 = manufacturing expanding.",
+    )
+    wi_lei_mom = st.slider(
+        "LEI MoM change (%)",
+        min_value=-2.0, max_value=2.0,
+        value=float(macro_signals["lei_mom"]),
+        step=0.05,
+        format="%.2f",
+        help="Conference Board Leading Economic Index month-on-month % change. Positive = leading indicators signal growth ahead.",
+    )
+    wi_claims_trend = st.slider(
+        "Initial claims — 4w MA change",
+        min_value=-100_000, max_value=100_000,
+        value=int(macro_signals["claims_trend_change"]),
+        step=1_000,
+        help="Change in the 4-week moving average of initial jobless claims. Negative = labour market tightening (smoothed, unlike raw WoW).",
+    )
+    wi_10y_chg = st.slider(
+        "10y yield change (%)",
+        min_value=-1.0, max_value=1.0,
+        value=float(macro_signals["yield_10y_change"]),
+        step=0.01,
+        format="%.2f",
+        help="Change in 10y Treasury yield over the past month. Bear steepener requires this to be positive.",
+    )
+    wi_2y_chg = st.slider(
+        "2y yield change (%)",
+        min_value=-1.0, max_value=1.0,
+        value=float(macro_signals["yield_2y_change"]),
+        step=0.01,
+        format="%.2f",
+        help="Change in 2y Treasury yield over the past month. Bear steepener requires the 10y to rise by MORE than the 2y.",
+    )
+
+with l1i_col:
+    st.markdown(
+        '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
+        ' text-transform:uppercase; margin-bottom:0.6rem; font-family:Inter,sans-serif;">'
+        'Layer 1 — Inflation</div>',
+        unsafe_allow_html=True,
+    )
+    wi_cpi = st.slider(
+        "CPI YoY (%)",
+        min_value=0.0, max_value=12.0,
+        value=float(macro_signals["cpi_yoy"]),
+        step=0.1,
+        format="%.1f",
+        help="Current CPI year-on-year % change.",
+    )
+    # Expose the 3m acceleration rather than the raw lag — easier to reason about
+    wi_cpi_3m_delta = st.slider(
+        "CPI YoY — 3m change (pp)",
+        min_value=-3.0, max_value=3.0,
+        value=round(float(macro_signals["cpi_yoy"]) - float(macro_signals["cpi_yoy_lag"]), 2),
+        step=0.05,
+        format="%.2f",
+        help="How much CPI YoY has moved over the past 3 months. Positive = re-accelerating.",
+    )
+    wi_core_cpi = st.slider(
+        "Core CPI YoY (%)",
+        min_value=0.0, max_value=10.0,
+        value=float(macro_signals["core_cpi_yoy"]),
+        step=0.1,
+        format="%.1f",
+        help="Core CPI (ex food & energy) YoY. Cleaner gauge of underlying inflation — what the Fed actually reacts to.",
+    )
+    wi_core_cpi_3m_delta = st.slider(
+        "Core CPI YoY — 3m change (pp)",
+        min_value=-2.0, max_value=2.0,
+        value=round(float(macro_signals["core_cpi_yoy"]) - float(macro_signals["core_cpi_yoy_lag"]), 2),
+        step=0.05,
+        format="%.2f",
+        help="How much core CPI YoY has moved in 3 months. Positive = sticky inflation re-accelerating.",
+    )
+    wi_ppi_mom = st.slider(
+        "PPI MoM (%)",
+        min_value=-5.0, max_value=5.0,
+        value=float(macro_signals["ppi_mom"]),
+        step=0.1,
+        format="%.1f",
+        help="Producer Price Index month-on-month % change. PPI leads CPI by 1–3 months.",
+    )
+    wi_breakeven = st.slider(
+        "5Y5Y breakeven (%)",
+        min_value=1.0, max_value=5.0,
+        value=float(macro_signals["breakeven_5y5y"]),
+        step=0.05,
+        format="%.2f",
+        help="Market's long-run inflation expectation (5–10yr forward). Rising = losing confidence in the Fed.",
+    )
+    wi_breakeven_3m_delta = st.slider(
+        "Breakeven — 3m change (pp)",
+        min_value=-1.0, max_value=1.0,
+        value=round(float(macro_signals["breakeven_5y5y"]) - float(macro_signals["breakeven_5y5y_lag"]), 2),
+        step=0.02,
+        format="%.2f",
+        help="How much the 5Y5Y breakeven has moved in 3 months. Positive = market pricing in more inflation.",
+    )
+    wi_michigan = st.slider(
+        "Michigan 1Y inflation exp (%)",
+        min_value=1.0, max_value=7.0,
+        value=float(macro_signals["michigan_exp"]),
+        step=0.1,
+        format="%.1f",
+        help="University of Michigan 1-year inflation expectations survey. Above 3% = elevated.",
+    )
+
+with l2_col:
+    st.markdown(
+        '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
+        ' text-transform:uppercase; margin-bottom:0.6rem; font-family:Inter,sans-serif;">'
+        'Layer 2 — Monetary</div>',
+        unsafe_allow_html=True,
+    )
+    wi_ff_current = st.slider(
+        "Fed Funds rate (%)",
+        min_value=0.0, max_value=10.0,
+        value=float(macro_signals["fed_funds_current"]),
+        step=0.25,
+        format="%.2f",
+        help="Current effective Federal Funds Rate.",
+    )
+    wi_ff_6m_chg = st.slider(
+        "Fed Funds 6m change (%)",
+        min_value=-3.0, max_value=3.0,
+        value=float(macro_signals["fed_funds_6m_change"]),
+        step=0.25,
+        format="%.2f",
+        help="6-month change in Fed Funds. Positive = hiking cycle, negative = cutting cycle.",
+    )
+    wi_ff_12m_high = st.slider(
+        "Fed Funds 12m peak (%)",
+        min_value=0.0, max_value=10.0,
+        value=float(macro_signals["fed_funds_12m_high"]),
+        step=0.25,
+        format="%.2f",
+        help="The highest Fed Funds rate over the past 12 months. Used to detect early/late cycle stage.",
+    )
+    wi_nfci = st.slider(
+        "NFCI (Chicago Fed)",
+        min_value=-1.0, max_value=2.0,
+        value=float(macro_signals["nfci"]),
+        step=0.05,
+        format="%.2f",
+        help="National Financial Conditions Index. Negative = loose (easy credit), positive = tight.",
+    )
+    wi_real_yield = st.slider(
+        "10yr real yield (%)",
+        min_value=-2.0, max_value=4.0,
+        value=float(macro_signals["real_yield_current"]),
+        step=0.05,
+        format="%.2f",
+        help="10-year TIPS yield (inflation-adjusted). Rising real yields = financial conditions tightening.",
+    )
+    wi_real_yield_3m_delta = st.slider(
+        "Real yield — 3m change (pp)",
+        min_value=-1.5, max_value=1.5,
+        value=round(float(macro_signals["real_yield_current"]) - float(macro_signals["real_yield_3m_ago"]), 2),
+        step=0.05,
+        format="%.2f",
+        help="How much the real yield has moved in 3 months. Positive = tightening impulse.",
+    )
+
+with l3_col:
+    st.markdown(
+        '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
+        ' text-transform:uppercase; margin-bottom:0.6rem; font-family:Inter,sans-serif;">'
+        'Layer 3 — RORO</div>',
+        unsafe_allow_html=True,
+    )
+    wi_vix_5d = st.slider(
+        "VIX 5-day change (pts)",
+        min_value=-15.0, max_value=25.0,
+        value=float(roro_signals.get("vix_5d_change", 0.0)),
+        step=0.5,
+        format="%.1f",
+        help="5-day change in the VIX fear index. Positive = fear rising = risk-off signal.",
+    )
+    wi_dxy_5d = st.slider(
+        "DXY 5-day change (%)",
+        min_value=-3.0, max_value=3.0,
+        value=float(roro_signals.get("dxy_5d_change", 0.0)),
+        step=0.1,
+        format="%.1f",
+        help="5-day % change in the US Dollar Index. Rising = safe-haven bid = risk-off signal.",
+    )
+    wi_gold_spy_5d = st.slider(
+        "Gold/SPY ratio 5-day change (%)",
+        min_value=-5.0, max_value=5.0,
+        value=float(roro_signals.get("gold_spy_ratio_5d_change", 0.0)),
+        step=0.1,
+        format="%.1f",
+        help="5-day % change in Gold/SPY ratio. Rising = gold outperforming equities = flight to safety.",
+    )
+    wi_hyg_5d = st.slider(
+        "HYG 5-day change (%)",
+        min_value=-5.0, max_value=5.0,
+        value=float(roro_signals.get("hyg_5d_change", 0.0)),
+        step=0.1,
+        format="%.1f",
+        help="5-day % change in HYG (high-yield bond ETF). Falling = credit risk aversion = risk-off.",
+    )
+    wi_eem_vs_spy_5d = st.slider(
+        "EEM vs SPY 5-day rel. perf (%)",
+        min_value=-5.0, max_value=5.0,
+        value=float(roro_signals.get("eem_vs_spy_5d", 0.0)),
+        step=0.1,
+        format="%.1f",
+        help="EEM 5-day return minus SPY 5-day return. Negative = EM underperforming = de-risking.",
+    )
+
+# --- Build hypothetical signal dicts from slider values ---
+wi_macro_signals = {
+    # Growth
+    "pmi_proxy":           wi_pmi,
+    "lei_mom":             wi_lei_mom,
+    "claims_trend_change": float(wi_claims_trend),
+    "yield_10y_change":    wi_10y_chg,
+    "yield_2y_change":     wi_2y_chg,
+    # Derived: bear steepener test uses both the spread change and the 10y move
+    "spread_10y2y_change": wi_10y_chg - wi_2y_chg,
+    # Inflation
+    "cpi_yoy":             wi_cpi,
+    "cpi_yoy_lag":         wi_cpi - wi_cpi_3m_delta,
+    "core_cpi_yoy":        wi_core_cpi,
+    "core_cpi_yoy_lag":    wi_core_cpi - wi_core_cpi_3m_delta,
+    "ppi_mom":             wi_ppi_mom,
+    "breakeven_5y5y":      wi_breakeven,
+    "breakeven_5y5y_lag":  wi_breakeven - wi_breakeven_3m_delta,
+    "michigan_exp":        wi_michigan,
+    # Monetary cycle (Layer 2)
+    "fed_funds_current":   wi_ff_current,
+    "fed_funds_1m_change": 0.0,  # not exposed — doesn't affect stance classification
+    "fed_funds_6m_change": wi_ff_6m_chg,
+    "fed_funds_12m_high":  max(wi_ff_12m_high, wi_ff_current),  # peak ≥ current
+    "nfci":                wi_nfci,
+    "real_yield_current":  wi_real_yield,
+    "real_yield_3m_ago":   wi_real_yield - wi_real_yield_3m_delta,
+}
+
+wi_roro_signals = {
+    "vix_5d_change":             wi_vix_5d,
+    "dxy_5d_change":             wi_dxy_5d,
+    "gold_spy_ratio_5d_change":  wi_gold_spy_5d,
+    "hyg_5d_change":             wi_hyg_5d,
+    "eem_vs_spy_5d":             wi_eem_vs_spy_5d,
+}
+
+# Run all three classifiers on the hypothetical inputs
+wi_result       = classify_regime(wi_macro_signals)
+wi_cycle_result = classify_monetary_cycle(wi_macro_signals)
+wi_roro_result  = classify_roro(wi_roro_signals)
+wi_regime_colour = REGIME_COLOURS[wi_result.regime]
+
+# --- Results row ---
+st.markdown(
+    '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
+    ' text-transform:uppercase; margin: 0.8rem 0 0.5rem; font-family:Inter,sans-serif;">'
+    'Scenario Output</div>',
+    unsafe_allow_html=True,
+)
+res_flag_col, res_breakdown_col = st.columns([1, 2])
+
+with res_flag_col:
+    st.markdown(
+        _regime_flag_html(wi_result, wi_cycle_result, wi_roro_result, wi_regime_colour),
+        unsafe_allow_html=True,
+    )
+
+with res_breakdown_col:
+    # Show signal-level breakdown so the user can see exactly which votes changed
+    bd_g, bd_i, bd_m, bd_r = st.columns(4)
+
+    wi_g_vals, wi_i_vals = _signal_values(wi_macro_signals)
+
+    with bd_g:
+        st.markdown(f"**Growth: {wi_result.growth_score}/4**")
+        for signal, fired in wi_result.growth_signals.items():
+            val_str = _fmt_signal_val(signal, wi_g_vals[signal])
+            st.markdown(f"{'✅' if fired else '❌'} {signal} `{val_str}`")
+
+    with bd_i:
+        st.markdown(f"**Inflation: {wi_result.inflation_score}/5**")
+        for signal, fired in wi_result.inflation_signals.items():
+            val_str = _fmt_signal_val(signal, wi_i_vals[signal])
+            st.markdown(f"{'✅' if fired else '❌'} {signal} `{val_str}`")
+
+    with bd_m:
+        st.markdown(f"**Monetary: {wi_cycle_result.stance}**")
+        for key, val in wi_cycle_result.signals.items():
+            if isinstance(val, bool):
+                st.markdown(f"{'✅' if val else '❌'} {key}")
+            else:
+                st.markdown(f"• {key}: **{val}**")
+
+    with bd_r:
+        st.markdown(f"**RORO: {wi_roro_result.stance} ({wi_roro_result.score}/5)**")
+        for key, val in wi_roro_result.signals.items():
+            is_risk_off = wi_roro_result.votes[key]
+            val_str = f"{val:+.2f}" if val == val else "n/a"
+            st.markdown(f"{'🔴' if is_risk_off else '🟢'} **{key}**: {val_str}")
+
+
+# =============================================================================
+# BACKTEST VALIDATION
+# Runs the Layer 1 classifier against 14 hand-labelled historical episodes
+# (1974 Oil Shock → 2024 Disinflation). Face-validity check — does the
+# framework correctly identify the regimes an interviewer would expect it to?
+#
+# V1 scope: single-midpoint sample per episode, full-hit + partial-hit counts.
+# Pre-2003 episodes have degraded signal sets (no TIPS breakevens, no Michigan
+# survey pre-1978, no LEI pre-1982) — the classifier scales thresholds to the
+# available signal count so earlier decades still produce a verdict.
+# =============================================================================
+
+st.markdown("---")
+st.markdown(
+    '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
+    ' text-transform:uppercase; margin: 1.2rem 0 0.5rem; font-family:Inter,sans-serif;">'
+    'Backtest Validation · 1974–2024</div>',
+    unsafe_allow_html=True,
+)
+
+bt_panel   = fetch_historical_panel()
+bt_results = backtest_episodes(bt_panel)
+bt_summary = hit_rate_summary(bt_results)
+
+# Summary metrics — four compact cards so the top-line numbers are unmissable.
+bt_m1, bt_m2, bt_m3, bt_m4 = st.columns(4)
+bt_m1.metric("Episodes", bt_summary["total"])
+bt_m2.metric("Hit rate", f"{bt_summary['hit_rate_pct']}%",
+             help="Full-match regime label as % of scorable episodes.")
+bt_m3.metric("Weighted score", f"{bt_summary['weighted_pct']}%",
+             help="Full hit = 1.0, partial (one axis right) = 0.5, miss = 0.")
+bt_m4.metric("Partial / Miss",
+             f"{bt_summary['partials']} / {bt_summary['misses']}",
+             help="Partial = one axis correct; Miss = diagonal-opposite quadrant.")
+
+# Colour-coded table. Streamlit's dataframe styler handles the conditional
+# background per cell — green hits, amber partials, red misses.
+def _colour_hit(val: str) -> str:
+    return {
+        "Hit":     "background-color: #065f46; color: white;",
+        "Partial": "background-color: #92400E; color: white;",
+        "Miss":    "background-color: #B91C1C; color: white;",
+        "No data": "background-color: #4a5568; color: white;",
+    }.get(val, "")
+
+styled = bt_results.style.applymap(_colour_hit, subset=["Hit"])
+st.dataframe(styled, use_container_width=True, hide_index=True)
+
+st.caption(
+    "Partial = one of growth/inflation axes matches; Miss = opposite quadrant. "
+    "Pre-2003 episodes run on a reduced signal set (no TIPS breakevens); "
+    "pre-1978 episodes also lack Michigan survey and LEI — the classifier scales "
+    "its voting thresholds to the available signal count."
+)

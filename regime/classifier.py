@@ -10,6 +10,7 @@
 #   Layer 3 — RORO (Risk-on/Risk-off)    ← stubbed, to be added
 # =============================================================================
 
+import math
 from dataclasses import dataclass, field
 
 
@@ -26,10 +27,15 @@ from dataclasses import dataclass, field
 # -----------------------------------------------------------------------------
 THRESHOLDS: dict[str, float] = {
     "growth_score_min":    2,     # out of 4 growth signals
-    "inflation_score_min": 2,     # out of 4 inflation signals
+    "inflation_score_min": 3,     # out of 5 inflation signals (majority-of-5 rule)
     "pmi_expansion":       50.0,  # PMI proxy: above = expanding
     "michigan_hot":        3.0,   # Michigan 1Y expectations above 3% = elevated
 }
+
+# Total number of signals per axis — used by the confidence calculation
+# to express "distance from regime flip" in absolute vote terms.
+MAX_GROWTH_SIGNALS    = 4
+MAX_INFLATION_SIGNALS = 5
 
 
 # -----------------------------------------------------------------------------
@@ -44,6 +50,7 @@ REGIME_COLOURS: dict[str, str] = {
     "Overheating":      "#fbbf24",  # vivid amber / gold
     "Goldilocks":       "#34d399",  # vivid emerald
     "Deflation/Bust":   "#60a5fa",  # vivid sky blue
+    "Insufficient data": "#4a5568", # grey — shown when too few signals to classify
 }
 
 
@@ -84,6 +91,17 @@ class RegimeResult:
     inflation_score: int
     growth_signals: dict = field(default_factory=dict)
     inflation_signals: dict = field(default_factory=dict)
+    # Confidence: how many votes would need to flip to change the regime on
+    # either axis. 1 = fragile (boundary call), 2 = moderate, 3+ = strong.
+    votes_to_flip: int = 2
+    confidence: str = "Moderate"   # "Fragile" | "Moderate" | "Strong"
+    # How many signals were actually computable (vs missing due to historical
+    # data gaps in backtest mode). In live mode these match MAX_* constants.
+    growth_available: int = MAX_GROWTH_SIGNALS
+    inflation_available: int = MAX_INFLATION_SIGNALS
+    # Thresholds actually used (dynamic — scales with available signals)
+    growth_threshold: int = 2
+    inflation_threshold: int = 3
 
 
 # -----------------------------------------------------------------------------
@@ -109,78 +127,120 @@ class RegimeResult:
 #     breakeven_5y5y_lag — 5Y5Y breakeven from 3 months ago (for acceleration check)
 #     michigan_exp       — University of Michigan 1Y inflation expectations
 # -----------------------------------------------------------------------------
+def _has(signals: dict, *keys: str) -> bool:
+    """True only if every key is present AND non-NaN."""
+    for k in keys:
+        if k not in signals:
+            return False
+        v = signals[k]
+        # NaN check that works without importing numpy/pandas here
+        if v is None or (isinstance(v, float) and v != v):
+            return False
+    return True
+
+
 def classify_regime(signals: dict[str, float]) -> RegimeResult:
-    """Classify the macro regime using a transparent scoring engine (Layer 1)."""
+    """Classify the macro regime using a transparent scoring engine (Layer 1).
+
+    Each signal is evaluated only if the underlying data is present. Missing
+    signals are skipped (not voted zero) — this lets the backtest run on
+    historical dates where some series didn't yet exist (e.g. pre-2003
+    breakevens). Thresholds scale to available-signal majorities.
+    """
 
     # -------------------------------------------------------------------------
-    # GROWTH SCORING — 4 signals, each votes +1 if positive
-    #
-    # Signal 1: Is PMI above 50?
-    #   PMI above 50 means the manufacturing sector is currently expanding.
-    #   This is the most direct growth indicator.
+    # GROWTH SCORING — each signal is (name, required-keys, rule). Rules only
+    # run when all required keys are present, so no KeyError if series missing.
     # -------------------------------------------------------------------------
-    g1 = signals["pmi_proxy"] > THRESHOLDS["pmi_expansion"]
+    growth_signals: dict[str, bool] = {}
 
-    # Signal 2: Is PMI accelerating (rising MoM)?
-    #   Even if PMI is below 50, a rising PMI means conditions are improving.
-    #   Direction of change matters as much as the level.
-    g2 = signals["pmi_mom_change"] > 0
+    # Signal: Is PMI above 50? (most direct growth indicator)
+    if _has(signals, "pmi_proxy"):
+        growth_signals["PMI > 50"] = signals["pmi_proxy"] > THRESHOLDS["pmi_expansion"]
 
-    # Signal 3: Are initial jobless claims falling week-on-week?
-    #   Rising claims = people losing jobs = growth slowing.
-    #   Falling claims = labour market tightening = growth signal.
-    #   ICSA is weekly, so it's one of the fastest leading indicators we have.
-    g3 = signals["claims_wow_change"] < 0
+    # Signal: Is the Conference Board LEI rising MoM?
+    # Decorrelated from PMI — a 10-indicator composite of leading indicators.
+    if _has(signals, "lei_mom"):
+        growth_signals["LEI rising (MoM)"] = signals["lei_mom"] > 0
 
-    # Signal 4: Is the yield curve steepening?
-    #   A steepening curve (spread rising) means markets are pricing in better
-    #   growth ahead. A flattening/inverting curve is a recession warning.
-    g4 = signals["spread_10y2y_change"] > 0
+    # Signal: Are initial jobless claims trending down (4w MA vs prior 4w MA)?
+    # Smoothed so we don't get whipsawed by holiday/seasonal noise.
+    if _has(signals, "claims_trend_change"):
+        growth_signals["Claims falling (4w MA)"] = signals["claims_trend_change"] < 0
 
-    growth_score = sum([g1, g2, g3, g4])
+    # Signal: BEAR steepener? (spread widening AND 10y leg leading the move)
+    # Distinguishes growth-positive bear steepener from recessionary bull steepener.
+    if _has(signals, "spread_10y2y_change", "yield_10y_change"):
+        growth_signals["Bear steepener"] = (
+            signals["spread_10y2y_change"] > 0 and signals["yield_10y_change"] > 0
+        )
 
-    # -------------------------------------------------------------------------
-    # INFLATION SCORING — 4 signals, each votes +1 if inflationary
-    #
-    # Signal 1: Is CPI YoY accelerating?
-    #   We compare current CPI YoY to 3 months ago. If it's higher, inflation
-    #   is re-accelerating — more dangerous than a stable high level.
-    # -------------------------------------------------------------------------
-    i1 = signals["cpi_yoy"] > signals["cpi_yoy_lag"]
-
-    # Signal 2: Is PPI (producer prices) rising MoM?
-    #   PPI leads CPI by 1–3 months — producers pass cost increases to consumers.
-    #   Rising PPI is an early warning that CPI will follow.
-    i2 = signals["ppi_mom"] > 0
-
-    # Signal 3: Are 5Y5Y breakevens rising?
-    #   The 5Y5Y breakeven is the bond market's view of average inflation 5–10
-    #   years from now. Rising breakevens = market losing confidence in the Fed's
-    #   ability to control long-run inflation. A critical signal for central banks.
-    i3 = signals["breakeven_5y5y"] > signals["breakeven_5y5y_lag"]
-
-    # Signal 4: Are consumer inflation expectations elevated?
-    #   From the University of Michigan survey. Above 3% is considered elevated.
-    #   Expectations matter because they're self-fulfilling — if people expect
-    #   high inflation, they demand higher wages, which causes higher inflation.
-    i4 = signals["michigan_exp"] > THRESHOLDS["michigan_hot"]
-
-    inflation_score = sum([i1, i2, i3, i4])
+    growth_available = len(growth_signals)
+    growth_score = sum(growth_signals.values())
 
     # -------------------------------------------------------------------------
-    # QUADRANT CLASSIFICATION
-    #
-    # Map the two scores to one of four regimes:
-    #
-    #                  | Inflation ≥ 2 | Inflation < 2   |
-    #  -----------------|---------------|-----------------|
-    #  Growth ≥ 2       | Overheating   | Goldilocks      |
-    #  Growth < 2       | Stagflation   | Deflation/Bust  |
-    #
+    # INFLATION SCORING — same graceful-skip pattern
     # -------------------------------------------------------------------------
-    g_threshold = THRESHOLDS["growth_score_min"]
-    i_threshold = THRESHOLDS["inflation_score_min"]
+    inflation_signals: dict[str, bool] = {}
 
+    # Signal: Headline CPI YoY accelerating over 3 months
+    if _has(signals, "cpi_yoy", "cpi_yoy_lag"):
+        inflation_signals["CPI YoY accelerating"] = signals["cpi_yoy"] > signals["cpi_yoy_lag"]
+
+    # Signal: Core CPI YoY accelerating — what the Fed actually reacts to
+    if _has(signals, "core_cpi_yoy", "core_cpi_yoy_lag"):
+        inflation_signals["Core CPI YoY accelerating"] = (
+            signals["core_cpi_yoy"] > signals["core_cpi_yoy_lag"]
+        )
+
+    # Signal: PPI rising MoM — leads CPI by 1-3 months
+    if _has(signals, "ppi_mom"):
+        inflation_signals["PPI rising (MoM)"] = signals["ppi_mom"] > 0
+
+    # Signal: 5Y5Y breakevens rising — market's long-run inflation view
+    # Only available post-2003 when TIPS market existed.
+    if _has(signals, "breakeven_5y5y", "breakeven_5y5y_lag"):
+        inflation_signals["Breakevens rising"] = (
+            signals["breakeven_5y5y"] > signals["breakeven_5y5y_lag"]
+        )
+
+    # Signal: Michigan 1Y inflation expectations elevated
+    # Only available post-1978.
+    if _has(signals, "michigan_exp"):
+        inflation_signals["Michigan exp > 3%"] = signals["michigan_exp"] > THRESHOLDS["michigan_hot"]
+
+    inflation_available = len(inflation_signals)
+    inflation_score = sum(inflation_signals.values())
+
+    # -------------------------------------------------------------------------
+    # DYNAMIC THRESHOLDS — "majority of available signals, minimum 2"
+    # Preserves current live-mode behaviour exactly (ceil(4/2)=2, ceil(5/2)=3)
+    # while letting the backtest run with fewer signals in earlier decades.
+    # -------------------------------------------------------------------------
+    g_threshold = max(2, math.ceil(growth_available / 2))
+    i_threshold = max(2, math.ceil(inflation_available / 2))
+
+    # Insufficient-data guard — refuse to classify if fewer than 2 signals
+    # available on either axis. Prevents coin-flip labels on 1-signal axes.
+    if growth_available < 2 or inflation_available < 2:
+        return RegimeResult(
+            regime="Insufficient data",
+            colour="#4a5568",
+            growth_score=growth_score,
+            inflation_score=inflation_score,
+            growth_signals=growth_signals,
+            inflation_signals=inflation_signals,
+            votes_to_flip=0,
+            confidence="N/A",
+            growth_available=growth_available,
+            inflation_available=inflation_available,
+            growth_threshold=g_threshold,
+            inflation_threshold=i_threshold,
+        )
+
+    # -------------------------------------------------------------------------
+    # QUADRANT CLASSIFICATION — same 2×2 as before, just using dynamic thresholds
+    # -------------------------------------------------------------------------
     if growth_score >= g_threshold and inflation_score >= i_threshold:
         regime = "Overheating"
     elif growth_score < g_threshold and inflation_score >= i_threshold:
@@ -190,25 +250,39 @@ def classify_regime(signals: dict[str, float]) -> RegimeResult:
     else:
         regime = "Deflation/Bust"
 
+    # -------------------------------------------------------------------------
+    # CONFIDENCE — votes-to-flip on each axis
+    #
+    # How many signals would need to swap for the regime to change? The minimum
+    # across the two axes is the overall fragility of the call.
+    #   - score >= threshold  → votes_to_flip = score - threshold + 1
+    #   - score <  threshold  → votes_to_flip = threshold - score
+    #
+    # 1 = Fragile (boundary call, single signal flips the regime)
+    # 2 = Moderate
+    # 3+ = Strong
+    # -------------------------------------------------------------------------
+    def _votes_to_flip(score: int, threshold: int) -> int:
+        return score - threshold + 1 if score >= threshold else threshold - score
+
+    growth_vtf    = _votes_to_flip(growth_score,    g_threshold)
+    inflation_vtf = _votes_to_flip(inflation_score, i_threshold)
+    votes_to_flip = min(growth_vtf, inflation_vtf)
+    confidence    = "Fragile" if votes_to_flip <= 1 else "Strong" if votes_to_flip >= 3 else "Moderate"
+
     return RegimeResult(
         regime=regime,
         colour=REGIME_COLOURS[regime],
         growth_score=growth_score,
         inflation_score=inflation_score,
-        # Store each signal as name → True/False so the dashboard can show
-        # exactly which signals fired and which didn't
-        growth_signals={
-            "PMI > 50":               g1,
-            "PMI accelerating (MoM)": g2,
-            "Claims falling (WoW)":   g3,
-            "Curve steepening":       g4,
-        },
-        inflation_signals={
-            "CPI YoY accelerating":       i1,
-            "PPI rising (MoM)":           i2,
-            "Breakevens rising":          i3,
-            "Michigan exp > 3%":          i4,
-        },
+        growth_signals=growth_signals,
+        inflation_signals=inflation_signals,
+        votes_to_flip=votes_to_flip,
+        confidence=confidence,
+        growth_available=growth_available,
+        inflation_available=inflation_available,
+        growth_threshold=g_threshold,
+        inflation_threshold=i_threshold,
     )
 
 

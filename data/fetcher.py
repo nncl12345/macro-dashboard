@@ -128,6 +128,49 @@ def fetch_fred_series(series_id: str, periods: int = 36) -> pd.Series:
 
 
 # -----------------------------------------------------------------------------
+# fetch_historical_panel()
+# Pulls the FULL history of every series the classifier uses, from 1965 onward.
+# Used by the backtest — one-shot cached fetch so we don't hit the FRED API
+# 13× (once per historical episode).
+#
+# Cache TTL is 24h: historical data doesn't change meaningfully intra-day, and
+# this fetch is ~14 API calls so we want to avoid repeating it on every page load.
+# -----------------------------------------------------------------------------
+HISTORICAL_SERIES: list[str] = [
+    "INDPRO",     # PMI proxy source
+    "USSLIND",    # LEI (from 1982)
+    "ICSA",       # Initial claims (from 1967)
+    "DGS10",      # 10y Treasury
+    "DGS2",       # 2y Treasury (from 1976)
+    "T10Y2Y",     # 2s10s spread (from 1976)
+    "CPIAUCSL",   # Headline CPI
+    "CPILFESL",   # Core CPI (from 1957)
+    "PPIACO",     # PPI
+    "T5YIFR",     # 5Y5Y breakeven (from 2003)
+    "MICH",       # Michigan expectations (from 1978)
+    "FEDFUNDS",   # Fed Funds rate
+    "NFCI",       # Chicago Fed financial conditions (from 1971)
+    "DFII10",     # 10y TIPS real yield (from 2003)
+]
+
+
+@st.cache_data(ttl=86400)   # 24h — historical data doesn't change often
+def fetch_historical_panel(start: str = "1965-01-01") -> dict[str, pd.Series]:
+    """Fetch the full history of every classifier-relevant FRED series.
+
+    Returns a dict of series_id → pd.Series. Series that don't exist until a
+    later start date will naturally begin partway through the returned range.
+    The backtest uses `.loc[:date]` slicing to get point-in-time data.
+    """
+    fred = _get_fred_client()
+    panel: dict[str, pd.Series] = {}
+    for sid in HISTORICAL_SERIES:
+        series = fred.get_series(sid, observation_start=start)
+        panel[sid] = series.dropna()
+    return panel
+
+
+# -----------------------------------------------------------------------------
 # fetch_macro_inputs()
 # The bridge between the data layer and the regime classifier.
 # Returns all signals needed by classify_regime() in regime/classifier.py.
@@ -166,23 +209,36 @@ def fetch_macro_inputs() -> dict[str, float]:
     pmi_proxy_prev = round(50 + (indpro_6m_prev * 2 * 2), 1)
     pmi_mom_change = round(pmi_proxy - pmi_proxy_prev, 2)
 
-    # --- Initial Jobless Claims (ICSA) ---
-    # Weekly series. Negative WoW change = fewer people filing for unemployment
-    # = labour market tightening = growth signal.
-    # We fetch 4 weeks to ensure we have at least 2 valid readings.
-    claims = fetch_fred_series("ICSA", periods=4)
-    claims_wow_change = float(claims.iloc[-1] - claims.iloc[-2])
-    # Expressed in thousands (ICSA reports in thousands of people)
+    # --- Conference Board LEI (Leading Economic Index) MoM ---
+    # USSLIND is a composite of 10 forward-looking indicators (claims, building
+    # permits, new orders, yield curve, equities, etc). MoM > 0 = leading
+    # indicators point to growth ahead. Used in place of a second PMI signal to
+    # avoid double-counting INDPRO — LEI captures a broader forward view.
+    lei = fetch_fred_series("USSLIND", periods=3)
+    lei_mom = round(float(lei.pct_change().dropna().iloc[-1] * 100), 3)
 
-    # --- 2s10s Yield Spread change ---
-    # We look at whether the spread is widening (steepening) or narrowing.
-    # A steepening curve = markets pricing in better growth ahead.
-    # We compare the latest reading to 4 weeks ago (T10Y2Y is daily).
-    spread_2s10s = fetch_fred_series("T10Y2Y", periods=30)
-    spread_10y2y_change = round(
-        float(spread_2s10s.iloc[-1]) - float(spread_2s10s.iloc[-20]), 3
-    )
-    # iloc[-20] ≈ 4 weeks ago on a daily series
+    # --- Initial Jobless Claims (ICSA) — 4-week moving average trend ---
+    # Weekly series. Raw WoW changes are dominated by holiday/seasonal noise,
+    # so we compare the latest 4-week average to the prior 4-week average.
+    # Negative = claims trending down = labour market tightening = growth signal.
+    claims = fetch_fred_series("ICSA", periods=8)
+    claims_4w_now  = float(claims.iloc[-4:].mean())
+    claims_4w_prev = float(claims.iloc[-8:-4].mean())
+    claims_trend_change = round(claims_4w_now - claims_4w_prev, 0)
+    # Expressed in level of claims (ICSA reports actual count, not thousands)
+
+    # --- 2yr and 10yr yield changes (for bear-steepener disambiguation) ---
+    # A "steepening" yield curve can be:
+    #   - Bull steepener: 2y falls more than 10y (Fed-cut fears → recession signal)
+    #   - Bear steepener: 10y rises more than 2y (growth/inflation repricing higher)
+    # Only the bear steepener is a real growth signal, so we track the 2y and
+    # 10y moves separately and classify in the classifier.
+    y10 = fetch_fred_series("DGS10", periods=30).dropna()
+    y2  = fetch_fred_series("DGS2",  periods=30).dropna()
+    yield_10y_change = round(float(y10.iloc[-1]) - float(y10.iloc[-20]), 3)
+    yield_2y_change  = round(float(y2.iloc[-1])  - float(y2.iloc[-20]),  3)
+    # Derived spread change, kept for backward compat with existing UI
+    spread_10y2y_change = round(yield_10y_change - yield_2y_change, 3)
 
     # =========================================================================
     # INFLATION SIGNALS
@@ -196,6 +252,15 @@ def fetch_macro_inputs() -> dict[str, float]:
     cpi_yoy = round(float(cpi_yoy_series.dropna().iloc[-1]), 3)
     cpi_yoy_lag = round(float(cpi_yoy_series.dropna().iloc[-4]), 3)
     # iloc[-4] = 3 months ago (monthly series)
+
+    # --- Core CPI YoY (current and lag) ---
+    # Core CPI strips food and energy — the components headline CPI is most
+    # volatile on. This is closer to what the Fed actually reacts to, and
+    # a much cleaner gauge of underlying inflation pressure.
+    core_cpi = fetch_fred_series("CPILFESL", periods=18)
+    core_cpi_yoy_series = core_cpi.pct_change(12) * 100
+    core_cpi_yoy     = round(float(core_cpi_yoy_series.dropna().iloc[-1]), 3)
+    core_cpi_yoy_lag = round(float(core_cpi_yoy_series.dropna().iloc[-4]), 3)
 
     # --- PPI MoM ---
     # Producer Price Index month-on-month % change.
@@ -260,12 +325,17 @@ def fetch_macro_inputs() -> dict[str, float]:
     return {
         # Growth
         "pmi_proxy":           pmi_proxy,
-        "pmi_mom_change":      pmi_mom_change,
-        "claims_wow_change":   claims_wow_change,
+        "pmi_mom_change":      pmi_mom_change,         # kept for reference, not used in classifier
+        "lei_mom":             lei_mom,
+        "claims_trend_change": claims_trend_change,
         "spread_10y2y_change": spread_10y2y_change,
+        "yield_10y_change":    yield_10y_change,
+        "yield_2y_change":     yield_2y_change,
         # Inflation
         "cpi_yoy":             cpi_yoy,
         "cpi_yoy_lag":         cpi_yoy_lag,
+        "core_cpi_yoy":        core_cpi_yoy,
+        "core_cpi_yoy_lag":    core_cpi_yoy_lag,
         "ppi_mom":             ppi_mom,
         "breakeven_5y5y":      breakeven_5y5y,
         "breakeven_5y5y_lag":  breakeven_5y5y_lag,
