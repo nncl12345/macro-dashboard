@@ -838,6 +838,159 @@ with res_breakdown_col:
 
 
 # =============================================================================
+# METHODOLOGY — explainer for the three-layer classification framework.
+# Positioned after the evidence (axis breakdowns) and before the backtest so
+# the page reads: answer → evidence → method → validation.
+# =============================================================================
+
+st.markdown("---")
+st.markdown(
+    '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
+    ' text-transform:uppercase; margin: 1.2rem 0 0.5rem; font-family:Inter,sans-serif;">'
+    'Methodology</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+The framework nests three layers running on different horizons. Each layer
+constrains the one inside it — the quadrant tells you *what* regime you're in,
+the monetary cycle tells you *how forcefully* it will express itself, and RORO
+tells you *how participants are trading it right now*.
+"""
+)
+
+meth_l1, meth_l2, meth_l3 = st.tabs([
+    "Layer 1 — Growth/Inflation Quadrant",
+    "Layer 2 — Monetary Cycle",
+    "Layer 3 — RORO overlay",
+])
+
+with meth_l1:
+    st.markdown(
+        """
+**Horizon: weeks–quarters.** Classifies the economy into one of four regimes
+based on the *direction of change* of growth and inflation — not their absolute
+level. A 3% GDP economy decelerating is stagflationary; a 1% GDP economy
+accelerating is Goldilocks.
+
+|  | Inflation ↑ | Inflation ↓ |
+|---|---|---|
+| **Growth ↑** | Overheating | Goldilocks |
+| **Growth ↓** | Stagflation | Deflation/Bust |
+
+Each axis runs a panel of directional signals that each vote **+1 if
+rising/accelerating**. Vote tallies cross a majority threshold; axis above = "up",
+below = "down". The two axis verdicts pick the quadrant.
+
+**Growth signals (4):** PMI proxy (INDPRO-derived) > 50; Conference Board LEI
+rising MoM; initial claims 4-week trend falling; bear steepener (10y–2y spread
+widening *and* 10y leading).
+
+**Inflation signals (5):** headline CPI YoY accelerating vs 3m ago; core CPI
+YoY accelerating vs 3m ago; PPI rising MoM; 5Y5Y breakevens rising vs 3m ago;
+Michigan 1Y expectations > 3%.
+
+Thresholds rescale to available signals, so pre-2003 backtests don't fake TIPS
+data that didn't exist yet.
+
+**Two hard overrides (v3):**
+
+1. **Sahm rule.** If the 3-month average of U3 unemployment has risen ≥0.5pp
+   above its trailing 12-month low, force the regime to **Deflation/Bust**.
+   Fires at the start of every US recession since 1950 with zero false positives.
+2. **Disinflation override.** If headline CPI YoY has rolled over ≥0.5pp from
+   its 12-month peak *and* is below its 3m-ago value, zero the inflation score.
+   Catches late-cycle disinflation where the *level* is still hot but the
+   *direction* has clearly turned (late 2022 onward).
+
+**Confidence metric.** Every call reports how many votes would need to flip to
+change the regime — 1 = Fragile, 2 = Moderate, 3+ = Strong. Flags knife-edge
+calls at a glance.
+"""
+    )
+
+with meth_l2:
+    st.markdown(
+        """
+**Horizon: months–years.** The slow outer constraint. Sets the liquidity
+environment and the discount rate on every risk asset. Four stances:
+
+- **Early Tightening** — Fed has begun hiking but rate is still well below
+  12m high (cycle just beginning).
+- **Peak Tightening** — Fed still hiking and rate is at/near 12m high
+  (terminal rate zone).
+- **Early Easing** — Fed has started cutting but rate is still close to peak
+  (first cuts just delivered).
+- **Full Easing** — multiple cuts in, rate well below 12m peak (accommodative
+  stance).
+
+**Logic.** First look at the 6-month Fed Funds change to get *direction*
+(hiking / cutting / on hold). Then use distance from the 12-month high to
+determine *stage* within that direction. If on hold, classify by the absolute
+rate level and Chicago Fed NFCI (tight financial conditions → Peak Tightening,
+loose → Full Easing).
+
+**Why it matters for Layer 1.** Same quadrant feels very different depending
+on the monetary stance:
+
+- **Overheating + Peak Tightening** = 2022 (brutal for everything — Fed can't
+  rescue anything).
+- **Goldilocks + Full Easing** = 1995, 2019 (best-case — disinflation with
+  a tailwind from cuts).
+- **Stagflation + Peak Tightening** = the worst combination: Fed can't ease,
+  everything reprices lower.
+
+**Supporting signal.** 10y real yield direction (3-month change in TIPS yield).
+Rising real yields confirm tightening impulse; falling reals confirm easing.
+Stored in the breakdown but not used in the classification itself.
+"""
+    )
+
+with meth_l3:
+    st.markdown(
+        """
+**Horizon: hours–days.** The fast overlay. Doesn't change the underlying
+regime — tells you whether participants are expressing it through *risk* or
+*safety* right now. Three stances: **Risk-On**, **Neutral**, **Risk-Off**.
+
+**5-signal voting engine.** Each signal votes +1 for Risk-Off:
+
+- **VIX 5d change positive** — fear index rising → investors buying protection.
+- **DXY 5d change positive** — USD safe-haven bid → global de-risking.
+- **Gold/SPY ratio 5d rising** — gold outpacing equities → flight to safety.
+- **HYG 5d change negative** — high-yield bonds falling → credit stress.
+- **EEM vs SPY 5d negative** — EM underperforming US → risk appetite fading.
+
+**Thresholds.** ≥3 votes = Risk-Off, 2 = Neutral, ≤1 = Risk-On.
+
+**Why it matters.** In risk-off episodes, normally uncorrelated assets converge
+toward safety (equities ↓, USD ↑, gold ↑, vol ↑, spreads widen). The RORO
+signal usually reverts to the regime signal — it's the tactical overlay that
+tells you whether to press or fade the regime call on a given day.
+
+**Reading the combinations:**
+
+- **Overheating + Risk-On** → the rally still has legs; stay long equities.
+- **Overheating + Risk-Off** → distribution phase; consider reducing exposure.
+- **Goldilocks + Risk-On** → classic bull market (1995, 2019 felt like this).
+- **Stagflation + Risk-Off** → 2022 — brutal for everything except commodities.
+"""
+    )
+
+st.markdown(
+    '<div style="color:#667085; font-size:0.78rem; margin: 0.8rem 0 0; '
+    'font-family:Inter,sans-serif; line-height:1.5;">'
+    '<b>Why rules-based, not ML.</b> Every vote can be explained to a PM in '
+    '30 seconds. A gradient-boosted tree would likely score higher in-sample but '
+    'is indefensible when it misclassifies live. Transparency beats accuracy for '
+    'a framework meant to guide discretionary macro positioning.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+
+# =============================================================================
 # BACKTEST VALIDATION
 # Runs the Layer 1 classifier against 14 hand-labelled historical episodes
 # (1974 Oil Shock → 2024 Disinflation). Face-validity check — does the
