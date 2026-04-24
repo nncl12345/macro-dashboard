@@ -73,14 +73,14 @@ MAX_INFLATION_SIGNALS = 13  # 2 + 2 + 3 + 3 + 3
 # Used consistently across the regime flag, charts, and heatmap.
 # -----------------------------------------------------------------------------
 REGIME_COLOURS: dict[str, str] = {
-    # Vivid neon palette — chosen for legibility on the dark (#080d19) background.
-    # Each colour is distinct in both hue and luminance so they can't be confused
-    # even at small sizes (e.g. the badge chips next to the regime flag).
-    "Stagflation":      "#ff5757",  # vivid red
-    "Overheating":      "#fbbf24",  # vivid amber / gold
-    "Goldilocks":       "#34d399",  # vivid emerald
-    "Deflation/Bust":   "#60a5fa",  # vivid sky blue
-    "Insufficient data": "#4a5568", # grey — shown when too few signals to classify
+    # Warmer, desaturated palette. The vivid red/amber/emerald/blue set looks
+    # like every Tailwind-default AI dashboard on the internet; terracotta,
+    # ochre, sage, and slate-blue read as considered instead of generated.
+    "Stagflation":      "#c9694d",  # terracotta
+    "Overheating":      "#c49752",  # ochre / aged gold
+    "Goldilocks":       "#7a9b7e",  # sage
+    "Deflation/Bust":   "#6b8cae",  # slate blue
+    "Insufficient data": "#555a66", # warm grey
 }
 
 
@@ -359,10 +359,10 @@ def classify_regime(signals: dict[str, float]) -> RegimeResult:
 # -----------------------------------------------------------------------------
 
 CYCLE_COLOURS: dict[str, str] = {
-    "Peak Tightening":  "#B91C1C",  # dark red   — maximum restriction, worst for risk
-    "Early Tightening": "#EA580C",  # orange     — hiking cycle underway, conditions tightening
-    "Early Easing":     "#2563EB",  # blue       — first cuts, relief beginning
-    "Full Easing":      "#059669",  # green      — accommodative, fuel for risk assets
+    "Peak Tightening":  "#a04a3a",  # deep brick  — maximum restriction
+    "Early Tightening": "#b8693f",  # burnt umber — hiking cycle underway
+    "Early Easing":     "#5d7bae",  # dusty blue  — first cuts, relief beginning
+    "Full Easing":      "#6a9270",  # sage green  — accommodative, fuel for risk assets
 }
 
 # Thresholds for the monetary cycle classifier
@@ -513,9 +513,9 @@ def classify_monetary_cycle(signals: dict[str, float]) -> MonetaryCycleResult:
 # -----------------------------------------------------------------------------
 
 RORO_COLOURS: dict[str, str] = {
-    "Risk-Off": "#B91C1C",   # dark red   — caution, safety trade
-    "Neutral":  "#92400E",   # amber      — mixed signals
-    "Risk-On":  "#059669",   # green      — risk appetite intact
+    "Risk-Off": "#a04a3a",   # deep brick  — caution, safety trade
+    "Neutral":  "#8a5e2e",   # bronze      — mixed signals
+    "Risk-On":  "#6a9270",   # sage green  — risk appetite intact
 }
 
 RORO_THRESHOLDS: dict[str, int] = {

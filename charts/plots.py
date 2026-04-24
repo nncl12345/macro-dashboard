@@ -30,20 +30,21 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r},{g},{b},{alpha})"
 
 
-FONT_FAMILY = "Inter, -apple-system, BlinkMacSystemFont, sans-serif"
-MONO_FAMILY = "JetBrains Mono, ui-monospace, SFMono-Regular, monospace"
+FONT_FAMILY = "'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif"
+MONO_FAMILY = "'JetBrains Mono', ui-monospace, SFMono-Regular, monospace"
 
 # Dark terminal theme — matches the app background (#080d19) and card surface (#0e1726)
 FONT_COLOR  = "#e2e8f0"   # near-white text on dark bg
 GRID_COLOR  = "#1a2a3a"   # very subtle grid lines — don't compete with data
 BG_COLOR    = "#0e1726"   # chart background matches card surface
 
-# Colour palette for chart lines — vivid enough to pop on dark bg
-COLOR_PRIMARY    = "#60a5fa"   # sky blue — current data
-COLOR_SECONDARY  = "#475569"   # muted slate — historical comparison
-COLOR_CPI        = "#fb923c"   # orange — headline CPI
-COLOR_CORE_CPI   = "#a78bfa"   # purple — Core CPI (stripped of food/energy volatility)
-COLOR_FED_TARGET = "#f87171"   # soft red — Fed 2% target line
+# Palette — shifted off the Tailwind defaults. Warmer terracotta/ochre/sage
+# replacing the vivid red/amber/emerald triad that every AI dashboard ships with.
+COLOR_PRIMARY    = "#6b8cae"   # slate blue — current data
+COLOR_SECONDARY  = "#4a5568"   # muted slate — historical comparison
+COLOR_CPI        = "#c9694d"   # terracotta — headline CPI
+COLOR_CORE_CPI   = "#9c8ac7"   # muted plum — Core CPI
+COLOR_FED_TARGET = "#c96a5a"   # brick — Fed 2% target line
 
 def _base_layout(title: str = "", height: int = 380, margin: Optional[dict] = None, **kwargs) -> dict:
     """
@@ -245,11 +246,11 @@ def plot_regime_heatmap(
     # consistent with the chart background so they don't "pop" falsely.
     # Vivid endpoints make the extreme return cells immediately readable.
     colorscale = [
-        [0.0,  "#b91c1c"],   # vivid red    — worst negative (e.g. SPX -25% in bust)
-        [0.35, "#4a0f0f"],   # dark red
+        [0.0,  "#c9694d"],   # terracotta   — worst negative
+        [0.35, "#4a1f17"],   # deep terracotta
         [0.5,  "#1a2a3a"],   # dark neutral — zero return blends with chart bg
-        [0.65, "#0d3321"],   # dark green
-        [1.0,  "#16a34a"],   # vivid green  — best positive (e.g. Gold +22% in stagflation)
+        [0.65, "#1f3327"],   # deep sage
+        [1.0,  "#7a9b7e"],   # sage         — best positive
     ]
 
     fig = go.Figure(data=go.Heatmap(
@@ -366,9 +367,9 @@ def plot_market_snapshot(df: pd.DataFrame) -> go.Figure:
         colors = []
         for v in table_df[col_name]:
             if v > 0:
-                colors.append("#34d399")   # emerald green — positive return
+                colors.append("#7a9b7e")   # sage — positive return
             elif v < 0:
-                colors.append("#f87171")   # soft red      — negative return
+                colors.append("#c9694d")   # terracotta — negative return
             else:
                 colors.append("#8899aa")   # muted         — flat
         return colors
@@ -436,9 +437,9 @@ def plot_episode_table(episode_data: list[dict]) -> go.Figure:
         if v is None:
             return "#334155"   # very muted — no data
         if v > 0:
-            return "#34d399"   # emerald green
+            return "#7a9b7e"   # sage
         if v < 0:
-            return "#f87171"   # soft red
+            return "#c9694d"   # terracotta
         return "#8899aa"
 
     # Per-row fill colours: average rows get a distinct background

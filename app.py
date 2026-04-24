@@ -59,7 +59,7 @@ st.set_page_config(
 # -----------------------------------------------------------------------------
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
     /* ── Base ── */
     .stApp,
@@ -110,7 +110,7 @@ st.markdown("""
     [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p {
         color: #8899aa;
         font-size: 0.82rem;
-        font-family: 'Inter', sans-serif;
+        font-family: 'IBM Plex Sans', sans-serif;
     }
 
     /* ── Spinner ── */
@@ -174,22 +174,21 @@ def _kpi_card(label: str, value: str, delta: str = "", status: str = "neutral") 
     amber = warning/elevated, neutral = informational.
     """
     # Dark card backgrounds — subtle tint, not screaming neon
-    bg     = {"good": "#0d2818", "bad": "#2d0a0a", "warn": "#1f1500", "neutral": "#0e1726"}[status]
-    border = {"good": "#34d39960", "bad": "#f8717160", "warn": "#fbbf2460", "neutral": "#1a2a3a"}[status]
-    # Value uses the status colour so the number itself carries the signal
-    val_c  = {"good": "#34d399", "bad": "#f87171", "warn": "#fbbf24", "neutral": "#e2e8f0"}[status]
+    bg     = {"good": "#162219", "bad": "#241511", "warn": "#201a0f", "neutral": "#0e1726"}[status]
+    border = {"good": "#7a9b7e55", "bad": "#c9694d55", "warn": "#c4975255", "neutral": "#1a2a3a"}[status]
+    val_c  = {"good": "#7a9b7e", "bad": "#c9694d", "warn": "#c49752", "neutral": "#e2e8f0"}[status]
     delta_html = (
-        f'<div style="font-size:0.69rem; color:#8899aa; margin-top:0.25rem;'
-        f' font-family:Inter,sans-serif;">{delta}</div>'
+        f'<div style="font-size:0.72rem; color:#8899aa; margin-top:0.3rem;'
+        f' font-family:\'IBM Plex Sans\',sans-serif;">{delta}</div>'
         if delta else ""
     )
     return (
-        f'<div style="background:{bg}; border-radius:8px; border:1px solid {border};'
-        f' padding:0.75rem 1rem; height:100%;">'
-        f'<div style="font-size:0.65rem; color:#8899aa; font-weight:600; letter-spacing:0.09em;'
-        f' text-transform:uppercase; margin-bottom:0.3rem; font-family:Inter,sans-serif;">{label}</div>'
-        f'<div style="font-size:1.45rem; font-weight:700; color:{val_c};'
-        f' font-family:\'JetBrains Mono\',monospace; letter-spacing:-0.01em;">{value}</div>'
+        f'<div style="background:{bg}; border-radius:6px; border:1px solid {border};'
+        f' padding:0.8rem 1rem; height:100%;">'
+        f'<div style="font-size:0.78rem; color:#8899aa; font-weight:500;'
+        f' margin-bottom:0.35rem; font-family:\'IBM Plex Sans\',sans-serif;">{label}</div>'
+        f'<div style="font-size:1.55rem; font-weight:600; color:{val_c};'
+        f' font-family:\'JetBrains Mono\',monospace; letter-spacing:-0.015em;">{value}</div>'
         f'{delta_html}'
         f'</div>'
     )
@@ -238,15 +237,15 @@ def _fmt_signal_val(signal_name: str, val: float) -> str:
 def _confidence_badge_html(confidence: str, votes_to_flip: int) -> str:
     """Small pill showing how fragile the regime call is (votes-to-flip)."""
     colour = {
-        "Fragile":  "#ff5757",   # red — boundary call, single signal could flip it
-        "Moderate": "#fbbf24",   # amber — some buffer, but not robust
-        "Strong":   "#34d399",   # green — firm majority on both axes
+        "Fragile":  "#c9694d",   # terracotta — boundary call, single signal could flip it
+        "Moderate": "#c49752",   # ochre — some buffer, but not robust
+        "Strong":   "#7a9b7e",   # sage — firm majority on both axes
     }[confidence]
     plural = "s" if votes_to_flip != 1 else ""
     return (
         f'<div style="margin-top:0.55rem;">'
-        f'<span style="font-size:0.6rem; font-weight:700; letter-spacing:0.1em;'
-        f' color:#4a5568; text-transform:uppercase; font-family:Inter,sans-serif;">'
+        f'<span style="font-size:0.7rem; font-weight:500; color:#8899aa;'
+        f' font-family:\'IBM Plex Sans\',sans-serif;">'
         f'Confidence&nbsp;</span>'
         f'<span style="font-size:0.72rem; font-weight:600; padding:0.14rem 0.44rem;'
         f' border-radius:4px; background-color:{colour}18; color:{colour};'
@@ -270,9 +269,8 @@ def _regime_flag_html(
         f' border:1px solid {regime_colour}40; background:#0e1726;'
         f' display:inline-block; min-width:270px;">'
 
-        f'<div style="font-size:0.62rem; font-weight:700; letter-spacing:0.12em;'
-        f' color:#4a5568; text-transform:uppercase; margin-bottom:0.45rem;'
-        f' font-family:Inter,sans-serif;">Macro Regime</div>'
+        f'<div style="font-size:0.72rem; font-weight:500; color:#8899aa; margin-bottom:0.45rem;'
+        f' font-family:\'IBM Plex Sans\',sans-serif;">Macro regime</div>'
 
         f'<div style="font-size:1.65rem; font-weight:800; letter-spacing:0.04em;'
         f' padding:0.28rem 0.8rem; border-radius:6px; display:inline-block;'
@@ -284,9 +282,8 @@ def _regime_flag_html(
         f'<div style="display:flex; gap:0.55rem; align-items:flex-start;">'
 
         f'<div>'
-        f'<div style="font-size:0.6rem; font-weight:700; letter-spacing:0.1em;'
-        f' color:#4a5568; text-transform:uppercase; margin-bottom:0.18rem;'
-        f' font-family:Inter,sans-serif;">Fed Cycle</div>'
+        f'<div style="font-size:0.7rem; font-weight:500; color:#8899aa; margin-bottom:0.18rem;'
+        f' font-family:\'IBM Plex Sans\',sans-serif;">Fed cycle</div>'
         f'<div style="font-size:0.76rem; font-weight:600; padding:0.18rem 0.48rem;'
         f' border-radius:4px; background-color:{cycle_colour}18; color:{cycle_colour};'
         f' border:1px solid {cycle_colour}50; white-space:nowrap;'
@@ -295,9 +292,8 @@ def _regime_flag_html(
         f'</div>'
 
         f'<div>'
-        f'<div style="font-size:0.6rem; font-weight:700; letter-spacing:0.1em;'
-        f' color:#4a5568; text-transform:uppercase; margin-bottom:0.18rem;'
-        f' font-family:Inter,sans-serif;">Sentiment</div>'
+        f'<div style="font-size:0.7rem; font-weight:500; color:#8899aa; margin-bottom:0.18rem;'
+        f' font-family:\'IBM Plex Sans\',sans-serif;">Sentiment</div>'
         f'<div style="font-size:0.76rem; font-weight:600; padding:0.18rem 0.48rem;'
         f' border-radius:4px; background-color:{roro_colour}18; color:{roro_colour};'
         f' border:1px solid {roro_colour}50; white-space:nowrap;'
@@ -312,7 +308,7 @@ def _regime_flag_html(
         f'{_confidence_badge_html(result.confidence, result.votes_to_flip)}'
 
         f'<div style="font-size:0.68rem; color:#4a5568; margin-top:0.55rem;'
-        f' font-family:Inter,sans-serif;">'
+        f' font-family:\'IBM Plex Sans\',sans-serif;">'
         f'Growth {result.growth_score}/{result.growth_available} (thr&nbsp;{result.growth_threshold})'
         f' &nbsp;&middot;&nbsp; '
         f'Inflation {result.inflation_score}/{result.inflation_available} (thr&nbsp;{result.inflation_threshold})'
@@ -328,12 +324,12 @@ def _regime_flag_html(
 
 st.markdown(
     '<div style="margin: 0 0 1.4rem; max-width: 760px;">'
-    '<div style="font-size:1.55rem; font-weight:700; color:#e2e8f0;'
-    ' font-family:Inter,sans-serif; letter-spacing:-0.015em; line-height:1.2;">'
+    '<div style="font-size:1.85rem; font-weight:400; color:#e8e4db;'
+    ' font-family:\'Instrument Serif\',Georgia,serif; letter-spacing:-0.01em; line-height:1.15;">'
     'Where I think the US macro regime is right now.'
     '</div>'
     '<div style="font-size:0.9rem; color:#8899aa; margin-top:0.5rem;'
-    ' font-family:Inter,sans-serif; line-height:1.55;">'
+    ' font-family:\'IBM Plex Sans\',sans-serif; line-height:1.55;">'
     '14 signals across growth, inflation, monetary policy, and risk appetite. '
     'The scoring engine hits 71% of hand-labelled episodes since 1974. '
     'The two it still misses are at the bottom of the page.'
@@ -536,8 +532,8 @@ with st.expander("Signal breakdown. What drove this regime classification?"):
 st.divider()
 st.markdown(
     '<div style="font-size:1.1rem; font-weight:700; color:#e2e8f0; letter-spacing:-0.01em;'
-    ' font-family:Inter,sans-serif; margin-bottom:0.1rem;">Scenario builder</div>'
-    '<div style="font-size:0.78rem; color:#4a5568; font-family:Inter,sans-serif;'
+    ' font-family:\'IBM Plex Sans\',sans-serif; margin-bottom:0.1rem;">Scenario builder</div>'
+    '<div style="font-size:0.78rem; color:#4a5568; font-family:\'IBM Plex Sans\',sans-serif;'
     ' margin-bottom:1.2rem;">Move a slider. The regime flag updates in place.</div>',
     unsafe_allow_html=True,
 )
@@ -547,8 +543,8 @@ l1g_col, l1i_col, l2_col, l3_col = st.columns(4)
 
 with l1g_col:
     st.markdown(
-        '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
-        ' text-transform:uppercase; margin-bottom:0.6rem; font-family:Inter,sans-serif;">'
+        '<div style="font-size:0.8rem; font-weight:600; color:#e2e8f0;'
+        ' margin-bottom:0.6rem; font-family:\'IBM Plex Sans\',sans-serif;">'
         'Layer 1 — Growth</div>',
         unsafe_allow_html=True,
     )
@@ -593,8 +589,8 @@ with l1g_col:
 
 with l1i_col:
     st.markdown(
-        '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
-        ' text-transform:uppercase; margin-bottom:0.6rem; font-family:Inter,sans-serif;">'
+        '<div style="font-size:0.8rem; font-weight:600; color:#e2e8f0;'
+        ' margin-bottom:0.6rem; font-family:\'IBM Plex Sans\',sans-serif;">'
         'Layer 1 — Inflation</div>',
         unsafe_allow_html=True,
     )
@@ -666,8 +662,8 @@ with l1i_col:
 
 with l2_col:
     st.markdown(
-        '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
-        ' text-transform:uppercase; margin-bottom:0.6rem; font-family:Inter,sans-serif;">'
+        '<div style="font-size:0.8rem; font-weight:600; color:#e2e8f0;'
+        ' margin-bottom:0.6rem; font-family:\'IBM Plex Sans\',sans-serif;">'
         'Layer 2 — Monetary</div>',
         unsafe_allow_html=True,
     )
@@ -722,8 +718,8 @@ with l2_col:
 
 with l3_col:
     st.markdown(
-        '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
-        ' text-transform:uppercase; margin-bottom:0.6rem; font-family:Inter,sans-serif;">'
+        '<div style="font-size:0.8rem; font-weight:600; color:#e2e8f0;'
+        ' margin-bottom:0.6rem; font-family:\'IBM Plex Sans\',sans-serif;">'
         'Layer 3 — RORO</div>',
         unsafe_allow_html=True,
     )
@@ -813,9 +809,9 @@ wi_regime_colour = REGIME_COLOURS[wi_result.regime]
 
 # --- Results row ---
 st.markdown(
-    '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
-    ' text-transform:uppercase; margin: 0.8rem 0 0.5rem; font-family:Inter,sans-serif;">'
-    'Scenario Output</div>',
+    '<div style="font-size:1rem; font-weight:600; color:#e2e8f0;'
+    ' margin: 0.8rem 0 0.5rem; font-family:\'IBM Plex Sans\',sans-serif;">'
+    'Scenario output</div>',
     unsafe_allow_html=True,
 )
 res_flag_col, res_breakdown_col = st.columns([1, 2])
@@ -868,8 +864,8 @@ with res_breakdown_col:
 
 st.markdown("---")
 st.markdown(
-    '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
-    ' text-transform:uppercase; margin: 1.2rem 0 0.5rem; font-family:Inter,sans-serif;">'
+    '<div style="font-size:1rem; font-weight:600; color:#e2e8f0;'
+    ' margin: 1.2rem 0 0.5rem; font-family:\'IBM Plex Sans\',sans-serif;">'
     'Methodology</div>',
     unsafe_allow_html=True,
 )
@@ -1010,7 +1006,7 @@ on a given day.
 
 st.markdown(
     '<div style="color:#667085; font-size:0.78rem; margin: 0.8rem 0 0; '
-    'font-family:Inter,sans-serif; line-height:1.55;">'
+    'font-family:\'IBM Plex Sans\',sans-serif; line-height:1.55;">'
     '<b>Why I went rules-based.</b> I tried an xgboost version first. '
     'It scored higher in backtest. I killed it because when it got a regime '
     'wrong I had no way to explain why on the spot, and overriding a single '
@@ -1037,9 +1033,9 @@ st.markdown(
 
 st.markdown("---")
 st.markdown(
-    '<div style="font-size:0.65rem; font-weight:700; letter-spacing:0.1em; color:#8899aa;'
-    ' text-transform:uppercase; margin: 1.2rem 0 0.5rem; font-family:Inter,sans-serif;">'
-    'Backtest Validation · 1974–2024</div>',
+    '<div style="font-size:1rem; font-weight:600; color:#e2e8f0;'
+    ' margin: 1.2rem 0 0.5rem; font-family:\'IBM Plex Sans\',sans-serif;">'
+    'Backtest validation · 1974–2024</div>',
     unsafe_allow_html=True,
 )
 
@@ -1062,10 +1058,10 @@ bt_m4.metric("Partial / Miss",
 # background per cell — green hits, amber partials, red misses.
 def _colour_hit(val: str) -> str:
     return {
-        "Hit":     "background-color: #065f46; color: white;",
-        "Partial": "background-color: #92400E; color: white;",
-        "Miss":    "background-color: #B91C1C; color: white;",
-        "No data": "background-color: #4a5568; color: white;",
+        "Hit":     "background-color: #3d5a42; color: #e8e4db;",
+        "Partial": "background-color: #6b5530; color: #e8e4db;",
+        "Miss":    "background-color: #7a3a2a; color: #e8e4db;",
+        "No data": "background-color: #4a5568; color: #e8e4db;",
     }.get(val, "")
 
 styled = bt_results.style.map(_colour_hit, subset=["Hit"])
