@@ -45,7 +45,6 @@ from regime.classifier import REGIME_COLOURS, REGIME_RETURNS, classify_regime, c
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Macro Regime Dashboard",
-    page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -324,10 +323,32 @@ def _regime_flag_html(
 
 
 # =============================================================================
-# ROW 1 — Regime flag + KPI cards
+# HERO — first-person framing so the page doesn't open in neutral AI-voice.
 # =============================================================================
 
-flag_col, kpi1, kpi2, kpi3, kpi4 = st.columns([2, 1, 1, 1, 1])
+st.markdown(
+    '<div style="margin: 0 0 1.4rem; max-width: 760px;">'
+    '<div style="font-size:1.55rem; font-weight:700; color:#e2e8f0;'
+    ' font-family:Inter,sans-serif; letter-spacing:-0.015em; line-height:1.2;">'
+    'Where I think the US macro regime is right now.'
+    '</div>'
+    '<div style="font-size:0.9rem; color:#8899aa; margin-top:0.5rem;'
+    ' font-family:Inter,sans-serif; line-height:1.55;">'
+    '14 signals across growth, inflation, monetary policy, and risk appetite. '
+    'The scoring engine hits 71% of hand-labelled episodes since 1974. '
+    'The two it still misses are at the bottom of the page.'
+    '</div>'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+
+# =============================================================================
+# ROW 1 — Regime flag + KPI cards
+# Asymmetric widths so the row doesn't read as a generic 4-card template.
+# =============================================================================
+
+flag_col, kpi1, kpi2, kpi3, kpi4 = st.columns([2.3, 1.25, 0.95, 0.85, 0.85])
 
 with flag_col:
     st.markdown(
@@ -463,7 +484,7 @@ st.plotly_chart(
 # This is the "show your working" section — important for CV credibility.
 # =============================================================================
 
-with st.expander("📋  Signal breakdown — what drove this regime classification?"):
+with st.expander("Signal breakdown. What drove this regime classification?"):
     g_col, i_col, m_col, r_col = st.columns(4)
 
     live_g_vals, live_i_vals = _signal_values(macro_signals)
@@ -514,10 +535,10 @@ with st.expander("📋  Signal breakdown — what drove this regime classificati
 
 st.divider()
 st.markdown(
-    '<div style="font-size:1.1rem; font-weight:700; color:#e2e8f0; letter-spacing:0.04em;'
-    ' font-family:Inter,sans-serif; margin-bottom:0.1rem;">🔮  Scenario Builder</div>'
+    '<div style="font-size:1.1rem; font-weight:700; color:#e2e8f0; letter-spacing:-0.01em;'
+    ' font-family:Inter,sans-serif; margin-bottom:0.1rem;">Scenario builder</div>'
     '<div style="font-size:0.78rem; color:#4a5568; font-family:Inter,sans-serif;'
-    ' margin-bottom:1.2rem;">Adjust any signal below — the regime flags update instantly.</div>',
+    ' margin-bottom:1.2rem;">Move a slider. The regime flag updates in place.</div>',
     unsafe_allow_html=True,
 )
 
@@ -855,10 +876,9 @@ st.markdown(
 
 st.markdown(
     """
-The framework nests three layers running on different horizons. Each layer
-constrains the one inside it — the quadrant tells you *what* regime you're in,
-the monetary cycle tells you *how forcefully* it will express itself, and RORO
-tells you *how participants are trading it right now*.
+Three layers on three horizons. The quadrant tells you what regime you're in.
+The monetary cycle tells you how forcefully the Fed will push back. RORO tells
+you whether traders are betting on it today or fading it.
 """
 )
 
@@ -871,9 +891,9 @@ meth_l1, meth_l2, meth_l3 = st.tabs([
 with meth_l1:
     st.markdown(
         """
-**Horizon: weeks–quarters.** Classifies the economy into one of four regimes
-based on the *direction of change* of growth and inflation — not their absolute
-level. A 3% GDP economy decelerating is stagflationary; a 1% GDP economy
+**Horizon: weeks to quarters.** Classifies the economy into one of four regimes
+based on the *direction of change* of growth and inflation, not the absolute
+level. A 3% GDP economy decelerating is stagflationary. A 1% GDP economy
 accelerating is Goldilocks.
 
 |  | Inflation ↑ | Inflation ↓ |
@@ -908,93 +928,96 @@ exist yet.
 
 1. **Sahm rule.** If the 3-month average of U3 unemployment has risen ≥0.5pp
    above its trailing 12-month low, force the regime to **Deflation/Bust**.
-   Fires at the start of every US recession since 1950 with zero false positives.
+   Fires at the start of every US recession since 1950 with no false positives.
 2. **Disinflation override.** If headline CPI YoY has rolled over ≥0.5pp from
    its 12-month peak *and* is below its 3m-ago value, zero the inflation score.
-   Catches late-cycle disinflation where the *level* is still hot but the
-   *direction* has clearly turned (late 2022 onward).
+   Catches late-cycle disinflation where the level is still hot but the
+   direction has clearly turned (late 2022 onward).
 
-**Confidence metric.** Every call reports how many votes would need to flip to
-change the regime — 1 = Fragile, 2 = Moderate, 3+ = Strong. Flags knife-edge
-calls at a glance.
+**Confidence metric.** Every call reports how many votes would need to flip
+to change the regime. 1 = Fragile. 2 = Moderate. 3+ = Strong. Surfaces
+knife-edge calls so you don't over-trust them.
 """
     )
 
 with meth_l2:
     st.markdown(
         """
-**Horizon: months–years.** The slow outer constraint. Sets the liquidity
+**Horizon: months to years.** The slow outer constraint. Sets the liquidity
 environment and the discount rate on every risk asset. Four stances:
 
-- **Early Tightening** — Fed has begun hiking but rate is still well below
-  12m high (cycle just beginning).
-- **Peak Tightening** — Fed still hiking and rate is at/near 12m high
-  (terminal rate zone).
-- **Early Easing** — Fed has started cutting but rate is still close to peak
-  (first cuts just delivered).
-- **Full Easing** — multiple cuts in, rate well below 12m peak (accommodative
-  stance).
+- **Early Tightening.** Fed has begun hiking but rate is still well below the
+  12m high. Cycle just beginning.
+- **Peak Tightening.** Fed still hiking, rate at or near its 12m high.
+  Terminal-rate zone.
+- **Early Easing.** Fed has started cutting but rate is still close to peak.
+  First cuts just delivered.
+- **Full Easing.** Multiple cuts in, rate well below 12m peak. Accommodative.
 
-**Logic.** First look at the 6-month Fed Funds change to get *direction*
-(hiking / cutting / on hold). Then use distance from the 12-month high to
-determine *stage* within that direction. If on hold, classify by the absolute
-rate level and Chicago Fed NFCI (tight financial conditions → Peak Tightening,
-loose → Full Easing).
+**Logic.** Look at the 6-month Fed Funds change first to get direction
+(hiking, cutting, on hold). Then use distance from the 12-month high to
+decide stage within that direction. If on hold, classify by the absolute rate
+level and Chicago Fed NFCI. Tight conditions imply Peak Tightening, loose
+imply Full Easing.
 
-**Why it matters for Layer 1.** Same quadrant feels very different depending
-on the monetary stance:
+**Why it matters for Layer 1.** The same quadrant feels completely different
+depending on the monetary stance:
 
-- **Overheating + Peak Tightening** = 2022 (brutal for everything — Fed can't
-  rescue anything).
-- **Goldilocks + Full Easing** = 1995, 2019 (best-case — disinflation with
-  a tailwind from cuts).
-- **Stagflation + Peak Tightening** = the worst combination: Fed can't ease,
-  everything reprices lower.
+- **Overheating + Peak Tightening** is 2022. Brutal for everything, the Fed
+  can't rescue anything.
+- **Goldilocks + Full Easing** is 1995 and 2019. Best-case: disinflation with
+  a cut tailwind.
+- **Stagflation + Peak Tightening** is the worst combination. The Fed can't
+  ease, so everything reprices lower.
 
 **Supporting signal.** 10y real yield direction (3-month change in TIPS yield).
-Rising real yields confirm tightening impulse; falling reals confirm easing.
-Stored in the breakdown but not used in the classification itself.
+Rising reals confirm a tightening impulse. Falling reals confirm easing. Shown
+in the breakdown but not used in the classification itself.
 """
     )
 
 with meth_l3:
     st.markdown(
         """
-**Horizon: hours–days.** The fast overlay. Doesn't change the underlying
-regime — tells you whether participants are expressing it through *risk* or
-*safety* right now. Three stances: **Risk-On**, **Neutral**, **Risk-Off**.
+**Horizon: hours to days.** The fast overlay. Doesn't change the underlying
+regime. Tells you whether participants are expressing it through risk or
+safety right now. Three stances: **Risk-On**, **Neutral**, **Risk-Off**.
 
 **5-signal voting engine.** Each signal votes +1 for Risk-Off:
 
-- **VIX 5d change positive** — fear index rising → investors buying protection.
-- **DXY 5d change positive** — USD safe-haven bid → global de-risking.
-- **Gold/SPY ratio 5d rising** — gold outpacing equities → flight to safety.
-- **HYG 5d change negative** — high-yield bonds falling → credit stress.
-- **EEM vs SPY 5d negative** — EM underperforming US → risk appetite fading.
+- **VIX 5d change positive.** Fear index rising, investors buying protection.
+- **DXY 5d change positive.** USD safe-haven bid, global de-risking.
+- **Gold/SPY ratio 5d rising.** Gold outpacing equities, flight to safety.
+- **HYG 5d change negative.** High-yield bonds falling, credit stress.
+- **EEM vs SPY 5d negative.** EM underperforming US, risk appetite fading.
 
-**Thresholds.** ≥3 votes = Risk-Off, 2 = Neutral, ≤1 = Risk-On.
+**Thresholds.** ≥3 votes is Risk-Off, 2 is Neutral, ≤1 is Risk-On.
 
 **Why it matters.** In risk-off episodes, normally uncorrelated assets converge
-toward safety (equities ↓, USD ↑, gold ↑, vol ↑, spreads widen). The RORO
-signal usually reverts to the regime signal — it's the tactical overlay that
-tells you whether to press or fade the regime call on a given day.
+toward safety: equities fall, USD rises, gold rises, vol rises, spreads widen.
+The RORO signal usually reverts back to the regime signal within a week. It's
+the tactical overlay that tells you whether to press or fade the regime call
+on a given day.
 
 **Reading the combinations:**
 
-- **Overheating + Risk-On** → the rally still has legs; stay long equities.
-- **Overheating + Risk-Off** → distribution phase; consider reducing exposure.
-- **Goldilocks + Risk-On** → classic bull market (1995, 2019 felt like this).
-- **Stagflation + Risk-Off** → 2022 — brutal for everything except commodities.
+- **Overheating + Risk-On.** The rally has legs, stay long equities.
+- **Overheating + Risk-Off.** Distribution phase, reduce exposure.
+- **Goldilocks + Risk-On.** Classic bull market. 1995 and 2019 felt like this.
+- **Stagflation + Risk-Off.** 2022. Brutal for everything except commodities.
 """
     )
 
 st.markdown(
     '<div style="color:#667085; font-size:0.78rem; margin: 0.8rem 0 0; '
-    'font-family:Inter,sans-serif; line-height:1.5;">'
-    '<b>Why rules-based, not ML.</b> Every vote can be explained to a PM in '
-    '30 seconds. A gradient-boosted tree would likely score higher in-sample but '
-    'is indefensible when it misclassifies live. Transparency beats accuracy for '
-    'a framework meant to guide discretionary macro positioning.'
+    'font-family:Inter,sans-serif; line-height:1.55;">'
+    '<b>Why I went rules-based.</b> I tried an xgboost version first. '
+    'It scored higher in backtest. I killed it because when it got a regime '
+    'wrong I had no way to explain why on the spot, and overriding a single '
+    'output meant retraining the whole thing. A rules engine lets me see '
+    'exactly which signal voted which way, override a single vote if I '
+    'disagree with it, and walk a PM through the logic without opening a '
+    'notebook. I traded ~5 points of in-sample accuracy for that.'
     '</div>',
     unsafe_allow_html=True,
 )
