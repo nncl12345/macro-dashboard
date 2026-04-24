@@ -882,7 +882,7 @@ def _colour_hit(val: str) -> str:
         "No data": "background-color: #4a5568; color: white;",
     }.get(val, "")
 
-styled = bt_results.style.applymap(_colour_hit, subset=["Hit"])
+styled = bt_results.style.map(_colour_hit, subset=["Hit"])
 st.dataframe(styled, use_container_width=True, hide_index=True)
 
 st.caption(
