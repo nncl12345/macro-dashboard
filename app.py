@@ -314,7 +314,9 @@ def _regime_flag_html(
 
         f'<div style="font-size:0.68rem; color:#4a5568; margin-top:0.55rem;'
         f' font-family:Inter,sans-serif;">'
-        f'Growth {result.growth_score}/4 &nbsp;&middot;&nbsp; Inflation {result.inflation_score}/5'
+        f'Growth {result.growth_score}/{result.growth_available} (thr&nbsp;{result.growth_threshold})'
+        f' &nbsp;&middot;&nbsp; '
+        f'Inflation {result.inflation_score}/{result.inflation_available} (thr&nbsp;{result.inflation_threshold})'
         f'</div>'
 
         f'</div>'
@@ -467,14 +469,14 @@ with st.expander("📋  Signal breakdown — what drove this regime classificati
     live_g_vals, live_i_vals = _signal_values(macro_signals)
 
     with g_col:
-        st.markdown(f"**Layer 1 — Growth: {result.growth_score}/4**")
+        st.markdown(f"**Layer 1 — Growth: {result.growth_score}/{result.growth_available} (thr {result.growth_threshold})**")
         for signal, fired in result.growth_signals.items():
             icon = "✅" if fired else "❌"
             val_str = _fmt_signal_val(signal, live_g_vals[signal])
             st.markdown(f"{icon} {signal} `{val_str}`")
 
     with i_col:
-        st.markdown(f"**Layer 1 — Inflation: {result.inflation_score}/5**")
+        st.markdown(f"**Layer 1 — Inflation: {result.inflation_score}/{result.inflation_available} (thr {result.inflation_threshold})**")
         for signal, fired in result.inflation_signals.items():
             icon = "✅" if fired else "❌"
             val_str = _fmt_signal_val(signal, live_i_vals[signal])
@@ -810,13 +812,13 @@ with res_breakdown_col:
     wi_g_vals, wi_i_vals = _signal_values(wi_macro_signals)
 
     with bd_g:
-        st.markdown(f"**Growth: {wi_result.growth_score}/4**")
+        st.markdown(f"**Growth: {wi_result.growth_score}/{wi_result.growth_available} (thr {wi_result.growth_threshold})**")
         for signal, fired in wi_result.growth_signals.items():
             val_str = _fmt_signal_val(signal, wi_g_vals[signal])
             st.markdown(f"{'✅' if fired else '❌'} {signal} `{val_str}`")
 
     with bd_i:
-        st.markdown(f"**Inflation: {wi_result.inflation_score}/5**")
+        st.markdown(f"**Inflation: {wi_result.inflation_score}/{wi_result.inflation_available} (thr {wi_result.inflation_threshold})**")
         for signal, fired in wi_result.inflation_signals.items():
             val_str = _fmt_signal_val(signal, wi_i_vals[signal])
             st.markdown(f"{'✅' if fired else '❌'} {signal} `{val_str}`")

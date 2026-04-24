@@ -32,10 +32,40 @@ THRESHOLDS: dict[str, float] = {
     "michigan_hot":        3.0,   # Michigan 1Y expectations above 3% = elevated
 }
 
-# Total number of signals per axis — used by the confidence calculation
-# to express "distance from regime flip" in absolute vote terms.
-MAX_GROWTH_SIGNALS    = 4
-MAX_INFLATION_SIGNALS = 5
+
+# -----------------------------------------------------------------------------
+# SIGNAL_WEIGHTS — leading vs coincident vote weighting
+#
+# Leading indicators (surveys, market-priced expectations, forward claims, yield
+# curve) turn *before* the economy does; coincident/lagging indicators (CPI,
+# INDPRO) confirm what's already happened. Giving leaders 2x weight catches
+# regime transitions sooner and downweights the "noise" from
+# published-with-a-lag inflation data that dominates the tape after the fact.
+#
+# The key names here must match the signal dict keys populated in
+# classify_regime() below.
+# -----------------------------------------------------------------------------
+SIGNAL_WEIGHTS: dict[str, int] = {
+    # Softer 1.5x ratio: leading=3, coincident=2 (integer-scaled so we don't
+    # lose the "n/m" readability in the UI). Previous 2x weighting over-
+    # penalised growth in episodes where only 1-2 leading signals fired.
+    # Growth axis
+    "PMI > 50":                   2,  # coincident (INDPRO is backward-looking)
+    "LEI rising (MoM)":           3,  # leading (Conference Board composite)
+    "Claims falling (4w MA)":     3,  # leading (weekly, high-frequency)
+    "Bear steepener":             3,  # leading (market's forward growth view)
+    # Inflation axis
+    "CPI YoY accelerating":       2,  # coincident (reports last month's CPI)
+    "Core CPI YoY accelerating":  2,  # coincident (same)
+    "PPI rising (MoM)":           3,  # leading (1–3m lead on CPI)
+    "Breakevens rising":          3,  # leading (market's forward inflation view)
+    "Michigan exp > 3%":          3,  # leading (survey of forward expectations)
+}
+
+# Max weighted total per axis, assuming every signal fires. Used by the UI
+# breakdown and the confidence calculation.
+MAX_GROWTH_SIGNALS    = 11  # 2 + 3 + 3 + 3
+MAX_INFLATION_SIGNALS = 13  # 2 + 2 + 3 + 3 + 3
 
 
 # -----------------------------------------------------------------------------
@@ -184,8 +214,12 @@ def classify_regime(signals: dict[str, float]) -> RegimeResult:
             signals["spread_10y2y_change"] > 0 and signals["yield_10y_change"] > 0
         )
 
-    growth_available = len(growth_signals)
-    growth_score = sum(growth_signals.values())
+    # Weighted scoring: each present signal contributes its weight (1 for
+    # coincident, 2 for leading). growth_available is the *weighted max*
+    # so that `score/available` reads correctly in the UI breakdown.
+    growth_signal_count = len(growth_signals)
+    growth_available    = sum(SIGNAL_WEIGHTS.get(k, 1) for k in growth_signals)
+    growth_score        = sum(SIGNAL_WEIGHTS.get(k, 1) for k, v in growth_signals.items() if v)
 
     # -------------------------------------------------------------------------
     # INFLATION SCORING — same graceful-skip pattern
@@ -218,8 +252,9 @@ def classify_regime(signals: dict[str, float]) -> RegimeResult:
     if _has(signals, "michigan_exp"):
         inflation_signals["Michigan exp > 3%"] = signals["michigan_exp"] > THRESHOLDS["michigan_hot"]
 
-    inflation_available = len(inflation_signals)
-    inflation_score = sum(inflation_signals.values())
+    inflation_signal_count = len(inflation_signals)
+    inflation_available    = sum(SIGNAL_WEIGHTS.get(k, 1) for k in inflation_signals)
+    inflation_score        = sum(SIGNAL_WEIGHTS.get(k, 1) for k, v in inflation_signals.items() if v)
 
     # -------------------------------------------------------------------------
     # DISINFLATION OVERRIDE
@@ -237,16 +272,21 @@ def classify_regime(signals: dict[str, float]) -> RegimeResult:
         inflation_signals["↓ Disinflation override"] = True
 
     # -------------------------------------------------------------------------
-    # DYNAMIC THRESHOLDS — "majority of available signals, minimum 2"
-    # Preserves current live-mode behaviour exactly (ceil(4/2)=2, ceil(5/2)=3)
-    # while letting the backtest run with fewer signals in earlier decades.
+    # DYNAMIC THRESHOLDS — "plurality-leaning half" of weighted total.
+    # Uses floor rather than ceil so the threshold is *just under* 50% of the
+    # weighted max. With the 1.5x leading-vs-coincident weighting this keeps
+    # the effective bar around 46%, comparable to the original unweighted
+    # 50% threshold. Using ceil on a weighted max of 11/13 makes the bar
+    # creep up to 55%+ and over-penalises the "up" regimes — verified in
+    # the backtest.
     # -------------------------------------------------------------------------
-    g_threshold = max(2, math.ceil(growth_available / 2))
-    i_threshold = max(2, math.ceil(inflation_available / 2))
+    g_threshold = max(2, math.floor(growth_available / 2))
+    i_threshold = max(2, math.floor(inflation_available / 2))
 
     # Insufficient-data guard — refuse to classify if fewer than 2 signals
-    # available on either axis. Prevents coin-flip labels on 1-signal axes.
-    if growth_available < 2 or inflation_available < 2:
+    # available on either axis. Uses signal *count* (not weighted) so a single
+    # heavy signal doesn't masquerade as two light ones.
+    if growth_signal_count < 2 or inflation_signal_count < 2:
         return RegimeResult(
             regime="Insufficient data",
             colour="#4a5568",
