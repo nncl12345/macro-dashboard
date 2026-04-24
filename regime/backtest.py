@@ -176,6 +176,33 @@ def build_signals_at(date: pd.Timestamp, panel: dict[str, pd.Series]) -> dict[st
     if mich is not None and len(mich) >= 1:
         signals["michigan_exp"] = round(float(mich.iloc[-1]), 2)
 
+    # --- CPI disinflation override ---
+    # Needs 24 months of CPI so we can compute 12 months of YoY values.
+    # cpi_rolled_over fires when CPI YoY is ≥0.5pp below its trailing 12m high;
+    # cpi_3m_decel fires when YoY is below its 3-month-ago value. When BOTH
+    # fire, the classifier treats inflation as "not rising" regardless of the
+    # other vote counts — captures late-2022-onward disinflation.
+    if cpi is not None and len(cpi) >= 24:
+        yoy_full = (cpi.pct_change(12) * 100).dropna()
+        if len(yoy_full) >= 12:
+            cpi_12m_peak = float(yoy_full.tail(12).max())
+            cpi_peak_gap = cpi_12m_peak - float(yoy_full.iloc[-1])
+            signals["cpi_peak_gap"]   = round(cpi_peak_gap, 3)
+            signals["cpi_rolled_over"] = cpi_peak_gap > 0.5
+            if len(yoy_full) >= 4:
+                signals["cpi_3m_decel"] = float(yoy_full.iloc[-1]) < float(yoy_full.iloc[-4])
+
+    # --- Sahm-rule recession trigger ---
+    # 3m MA of UNRATE ≥ 0.5pp above its trailing 12m minimum. Hard override:
+    # if fired, classifier returns Deflation/Bust regardless of scoring.
+    unrate = _slice("UNRATE")
+    if unrate is not None and len(unrate) >= 15:
+        unrate_3m = unrate.rolling(3).mean().dropna()
+        if len(unrate_3m) >= 12:
+            sahm_current = float(unrate_3m.iloc[-1])
+            sahm_12m_min = float(unrate_3m.tail(12).min())
+            signals["sahm_trigger"] = (sahm_current - sahm_12m_min) >= 0.5
+
     return signals
 
 

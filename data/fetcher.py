@@ -151,6 +151,7 @@ HISTORICAL_SERIES: list[str] = [
     "FEDFUNDS",   # Fed Funds rate
     "NFCI",       # Chicago Fed financial conditions (from 1971)
     "DFII10",     # 10y TIPS real yield (from 2003)
+    "UNRATE",     # Unemployment rate — Sahm-rule recession detector
 ]
 
 
@@ -282,6 +283,33 @@ def fetch_macro_inputs() -> dict[str, float]:
     mich = fetch_fred_series("MICH", periods=3)
     michigan_exp = round(float(mich.iloc[-1]), 2)
 
+    # --- CPI disinflation override signals ---
+    # The framework scores +1 when each momentum signal fires "rising". But in
+    # disinflation phases (e.g. late 2022 onward), CPI YoY level may still be
+    # elevated even as the direction has clearly turned. These two signals detect
+    # "CPI has rolled over from peak" and, when both fire, the classifier zeroes
+    # the inflation score to force a disinflation read. Purely directional —
+    # stays true to the framework's "rate of change is everything" principle.
+    cpi_14 = fetch_fred_series("CPIAUCSL", periods=24)    # need 24 so YoY has 12m of history
+    cpi_yoy_14 = (cpi_14.pct_change(12) * 100).dropna()
+    cpi_12m_peak     = round(float(cpi_yoy_14.tail(12).max()), 3)
+    cpi_peak_gap     = round(cpi_12m_peak - cpi_yoy, 3)    # >=0; positive = off peak
+    cpi_rolled_over  = cpi_peak_gap > 0.5                  # at least 0.5pp below 12m high
+    cpi_3m_decel     = cpi_yoy < cpi_yoy_lag               # 3m momentum negative
+
+    # --- Sahm-rule recession trigger ---
+    # Claudia Sahm's 2019 rule: a recession has started when the 3m moving
+    # average of U3 unemployment rises 0.5pp above its trailing 12-month low.
+    # Empirically triggered at the onset of every US recession since 1950 with
+    # zero false positives. Used as a hard override — if triggered, the regime
+    # is forced to Deflation/Bust regardless of the classifier's quadrant math.
+    unrate = fetch_fred_series("UNRATE", periods=18)
+    unrate_3m = unrate.rolling(3).mean().dropna()
+    # Compare latest 3m avg to the minimum 3m avg over the past 12 months
+    sahm_current = float(unrate_3m.iloc[-1])
+    sahm_12m_min = float(unrate_3m.tail(12).min())
+    sahm_trigger = (sahm_current - sahm_12m_min) >= 0.5
+
     # =========================================================================
     # MONETARY CYCLE SIGNALS (Layer 2)
     # =========================================================================
@@ -340,6 +368,11 @@ def fetch_macro_inputs() -> dict[str, float]:
         "breakeven_5y5y":      breakeven_5y5y,
         "breakeven_5y5y_lag":  breakeven_5y5y_lag,
         "michigan_exp":        michigan_exp,
+        # Disinflation + recession override signals (v3 classifier)
+        "cpi_rolled_over":     cpi_rolled_over,
+        "cpi_3m_decel":        cpi_3m_decel,
+        "cpi_peak_gap":        cpi_peak_gap,
+        "sahm_trigger":        sahm_trigger,
         # Monetary cycle (Layer 2)
         "fed_funds_current":   fed_funds_current,
         "fed_funds_1m_change": fed_funds_1m_change,

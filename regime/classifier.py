@@ -149,6 +149,15 @@ def classify_regime(signals: dict[str, float]) -> RegimeResult:
     """
 
     # -------------------------------------------------------------------------
+    # SAHM-RULE HARD OVERRIDE
+    # Sahm's recession rule fires at the start of every US recession since 1950
+    # with no false positives. When triggered, the quadrant math is irrelevant —
+    # the economy is contracting, growth is negative, regime is Deflation/Bust.
+    # We still compute scores below for the UI breakdown.
+    # -------------------------------------------------------------------------
+    sahm_override = bool(signals.get("sahm_trigger", False))
+
+    # -------------------------------------------------------------------------
     # GROWTH SCORING — each signal is (name, required-keys, rule). Rules only
     # run when all required keys are present, so no KeyError if series missing.
     # -------------------------------------------------------------------------
@@ -213,6 +222,21 @@ def classify_regime(signals: dict[str, float]) -> RegimeResult:
     inflation_score = sum(inflation_signals.values())
 
     # -------------------------------------------------------------------------
+    # DISINFLATION OVERRIDE
+    # When CPI has rolled over from its 12m peak AND 3m momentum is negative,
+    # inflation is directionally falling regardless of what the level-oriented
+    # level signals suggest. Zero the inflation score to force a disinflation
+    # regime (Goldilocks or Deflation/Bust). Preserves the "rate of change is
+    # everything" philosophy — level-hot but rolling-over is not "rising".
+    # -------------------------------------------------------------------------
+    disinflation_override = bool(
+        signals.get("cpi_rolled_over") and signals.get("cpi_3m_decel")
+    )
+    if disinflation_override:
+        inflation_score = 0
+        inflation_signals["↓ Disinflation override"] = True
+
+    # -------------------------------------------------------------------------
     # DYNAMIC THRESHOLDS — "majority of available signals, minimum 2"
     # Preserves current live-mode behaviour exactly (ceil(4/2)=2, ceil(5/2)=3)
     # while letting the backtest run with fewer signals in earlier decades.
@@ -241,7 +265,11 @@ def classify_regime(signals: dict[str, float]) -> RegimeResult:
     # -------------------------------------------------------------------------
     # QUADRANT CLASSIFICATION — same 2×2 as before, just using dynamic thresholds
     # -------------------------------------------------------------------------
-    if growth_score >= g_threshold and inflation_score >= i_threshold:
+    if sahm_override:
+        # Recession detected — bypass scoring and force Deflation/Bust
+        regime = "Deflation/Bust"
+        growth_signals["⚠ Sahm rule triggered"] = True
+    elif growth_score >= g_threshold and inflation_score >= i_threshold:
         regime = "Overheating"
     elif growth_score < g_threshold and inflation_score >= i_threshold:
         regime = "Stagflation"
