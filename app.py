@@ -881,20 +881,28 @@ accelerating is Goldilocks.
 | **Growth ↑** | Overheating | Goldilocks |
 | **Growth ↓** | Stagflation | Deflation/Bust |
 
-Each axis runs a panel of directional signals that each vote **+1 if
-rising/accelerating**. Vote tallies cross a majority threshold; axis above = "up",
-below = "down". The two axis verdicts pick the quadrant.
+Each axis runs a panel of directional signals that each vote **+weight if
+rising/accelerating**. Leading indicators (surveys, forward-market prices,
+weekly claims, yield curve) carry **weight 3**; coincident/lagging indicators
+(PMI from INDPRO, headline CPI, core CPI) carry **weight 2**. The 1.5× ratio
+rewards early-warning signals without letting a single leader masquerade as
+a full axis verdict. Weighted tallies cross a majority threshold; axis above
+= "up", below = "down". The two axis verdicts pick the quadrant.
 
-**Growth signals (4):** PMI proxy (INDPRO-derived) > 50; Conference Board LEI
-rising MoM; initial claims 4-week trend falling; bear steepener (10y–2y spread
-widening *and* 10y leading).
+**Growth signals — weighted max 11:** PMI proxy (INDPRO-derived) > 50 *(coincident, 2)*;
+Conference Board LEI rising MoM *(leading, 3)*; initial claims 4-week trend
+falling *(leading, 3)*; bear steepener (10y–2y spread widening *and* 10y
+leading) *(leading, 3)*.
 
-**Inflation signals (5):** headline CPI YoY accelerating vs 3m ago; core CPI
-YoY accelerating vs 3m ago; PPI rising MoM; 5Y5Y breakevens rising vs 3m ago;
-Michigan 1Y expectations > 3%.
+**Inflation signals — weighted max 13:** headline CPI YoY accelerating vs 3m ago
+*(coincident, 2)*; core CPI YoY accelerating vs 3m ago *(coincident, 2)*; PPI
+rising MoM *(leading, 3)*; 5Y5Y breakevens rising vs 3m ago *(leading, 3)*;
+Michigan 1Y expectations > 3% *(leading, 3)*.
 
-Thresholds rescale to available signals, so pre-2003 backtests don't fake TIPS
-data that didn't exist yet.
+**Threshold:** `floor(weighted_max / 2)` — sits just under 50% of the available
+weighted max (5 for growth, 6 for inflation on the full signal set). Rescales
+to available signals so pre-2003 backtests don't fake TIPS data that didn't
+exist yet.
 
 **Two hard overrides (v3):**
 
