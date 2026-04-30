@@ -40,8 +40,24 @@ FRED_SERIES: dict[str, str] = {
     # --- Growth ---
     "indpro":           "INDPRO",    # Industrial Production Index (PMI proxy)
     "claims":           "ICSA",      # Initial Jobless Claims (weekly — fastest leading indicator)
+    "continuing_claims": "CCSA",     # Continuing Claims — stock of unemployed (slower-moving than initial)
     "lei":              "USSLIND",   # Conference Board Leading Economic Index
     "retail_sales":     "RSXFS",     # Retail Sales ex Food Services (consumer demand)
+    "wei":              "WEI",       # NY Fed Weekly Economic Index (real-time GDP nowcast)
+
+    # --- Net liquidity (Fed balance-sheet quantity-of-money read) ---
+    "walcl":            "WALCL",     # Fed total assets (weekly H.4.1, $M)
+    "tga":              "WTREGEN",   # Treasury General Account (weekly, $M) — cash sitting outside system
+    "rrp":              "RRPONTSYD", # Overnight Reverse Repo balance (daily, $B) — MMF cash parked at Fed
+    # Net liquidity = WALCL − TGA − RRP. Rising = stealth easing, falling = stealth tightening.
+
+    # --- Funding-market stress (gating override) ---
+    "sofr":             "SOFR",      # Secured Overnight Financing Rate (from 2018-04)
+    "iorb":             "IORB",      # Interest on Reserve Balances (from 2021-07; pre-2021 = IOER)
+    # SOFR > IORB by >5bp = dealer balance sheets full = funding stress = forces "Peak Tightening".
+
+    # --- Credit / risk overlay ---
+    "hy_oas":           "BAMLH0A0HYM2",  # ICE BofA US HY OAS (daily, from 1996) — replaces HYG price as RORO signal
 
     # --- Rates & Yield Curve ---
     "fed_funds":        "FEDFUNDS",  # Federal Funds Rate
@@ -228,6 +244,25 @@ def fetch_macro_inputs() -> dict[str, float]:
     claims_trend_change = round(claims_4w_now - claims_4w_prev, 0)
     # Expressed in level of claims (ICSA reports actual count, not thousands)
 
+    # --- Continuing Claims (CCSA) — stock of unemployed ---
+    # Initial claims captures the inflow into unemployment; CCSA captures the
+    # *stock* — people who've filed and still can't find work. Together they
+    # form a 2-vote labour basket: initial says "are people losing jobs?",
+    # continuing says "are they getting hired back?". Same 4w/4w smoothing.
+    cc = fetch_fred_series("CCSA", periods=8)
+    cc_4w_now   = float(cc.iloc[-4:].mean())
+    cc_4w_prev  = float(cc.iloc[-8:-4].mean())
+    continuing_claims_trend_change = round(cc_4w_now - cc_4w_prev, 0)
+
+    # --- WEI (Weekly Economic Index, NY Fed) ---
+    # Composite of 10 weekly indicators (claims, retail, fuel, payroll tax,
+    # steel, etc.) scaled to look like real GDP growth. Real-time nowcast —
+    # complements monthly INDPRO with a weekly-cadence growth read.
+    # Vote: WEI > its 4-week MA = growth accelerating.
+    wei = fetch_fred_series("WEI", periods=8)
+    wei_current = round(float(wei.iloc[-1]), 3)
+    wei_4w_avg  = round(float(wei.iloc[-4:].mean()), 3)
+
     # --- 2yr and 10yr yield changes (for bear-steepener disambiguation) ---
     # A "steepening" yield curve can be:
     #   - Bull steepener: 2y falls more than 10y (Fed-cut fears → recession signal)
@@ -350,12 +385,68 @@ def fetch_macro_inputs() -> dict[str, float]:
     real_yield_3m_ago  = round(float(real_yield_series.iloc[-60]), 2)
     # iloc[-60] ≈ 3 months ago on a daily series
 
+    # --- Net liquidity (WALCL − TGA − RRP) ---
+    # The quantity-of-money read on Fed policy. Fed Funds tells you the *price*
+    # of money; net liquidity tells you how much cash is actually circulating
+    # in the financial system bidding up assets. Rose sharply in early 2023 as
+    # the TGA drained — explained the equity rally despite Fed still hiking.
+    #
+    # Units: WALCL and TGA are in $M, RRP is in $B. Convert all to $T.
+    # Resample to weekly Friday so all three series align (WALCL is Wed-stamped,
+    # RRP is daily, TGA is weekly).
+    try:
+        walcl = fetch_fred_series("WALCL", periods=20).resample("W-FRI").last().ffill() / 1_000_000
+        tga   = fetch_fred_series("WTREGEN", periods=20).resample("W-FRI").last().ffill() / 1_000_000
+        rrp   = fetch_fred_series("RRPONTSYD", periods=100).resample("W-FRI").last().ffill() / 1_000
+        net_liq = (walcl - tga - rrp).dropna()
+        net_liq_current  = round(float(net_liq.iloc[-1]), 3)
+        net_liq_3m_ago   = round(float(net_liq.iloc[-13]), 3)   # ~13 weeks = 3 months
+        net_liq_3m_change_pct = round((net_liq_current / net_liq_3m_ago - 1) * 100, 2)
+    except Exception:
+        net_liq_current = float("nan")
+        net_liq_3m_ago = float("nan")
+        net_liq_3m_change_pct = float("nan")
+
+    # --- SOFR − IORB spread (funding stress canary) ---
+    # SOFR should trade *below* IORB in normal times — IORB is the risk-free
+    # ceiling. When SOFR spikes above IORB, it means dealers are paying a
+    # premium for cash because big banks have stopped lending out their
+    # reserves (balance sheets full, regulatory ratios constrained).
+    # Sept 2019 repo crisis was telegraphed here. Gating override on Layer 2.
+    try:
+        sofr = fetch_fred_series("SOFR", periods=10).dropna()
+        iorb = fetch_fred_series("IORB", periods=10).dropna()
+        sofr_iorb_spread_bp = round((float(sofr.iloc[-1]) - float(iorb.iloc[-1])) * 100, 2)
+    except Exception:
+        sofr_iorb_spread_bp = float("nan")
+
+    # --- MOVE Index (Treasury vol) ---
+    # Bond-market equivalent of VIX. When MOVE spikes, *everything* reprices —
+    # duration, equity multiples, FX carry. Fed-cycle stress shows up here
+    # before VIX. Vote: MOVE > 12m average = tight/uncertain conditions.
+    # Yahoo coverage of ^MOVE is sometimes spotty; fall back to NaN if missing.
+    try:
+        move_raw = yf.download("^MOVE", period="1y", auto_adjust=True, progress=False)
+        move_close = move_raw["Close"].squeeze().dropna() if not move_raw.empty else pd.Series(dtype=float)
+        if len(move_close) >= 60:
+            move_current = round(float(move_close.iloc[-1]), 2)
+            move_12m_avg = round(float(move_close.mean()), 2)
+        else:
+            move_current = float("nan")
+            move_12m_avg = float("nan")
+    except Exception:
+        move_current = float("nan")
+        move_12m_avg = float("nan")
+
     return {
         # Growth
         "pmi_proxy":           pmi_proxy,
         "pmi_mom_change":      pmi_mom_change,         # kept for reference, not used in classifier
         "lei_mom":             lei_mom,
         "claims_trend_change": claims_trend_change,
+        "continuing_claims_trend_change": continuing_claims_trend_change,
+        "wei_current":         wei_current,
+        "wei_4w_avg":          wei_4w_avg,
         "spread_10y2y_change": spread_10y2y_change,
         "yield_10y_change":    yield_10y_change,
         "yield_2y_change":     yield_2y_change,
@@ -381,6 +472,12 @@ def fetch_macro_inputs() -> dict[str, float]:
         "nfci":                nfci,
         "real_yield_current":  real_yield_current,
         "real_yield_3m_ago":   real_yield_3m_ago,
+        # Net liquidity + funding stress + rates vol (Tier 1 Layer 2 adds)
+        "net_liq_current":      net_liq_current,
+        "net_liq_3m_change_pct": net_liq_3m_change_pct,
+        "sofr_iorb_spread_bp":  sofr_iorb_spread_bp,
+        "move_current":         move_current,
+        "move_12m_avg":         move_12m_avg,
     }
 
 
@@ -566,14 +663,28 @@ def fetch_roro_signals() -> dict[str, float]:
             float((prices["dxy"].iloc[-1] / prices["dxy"].iloc[-6] - 1) * 100), 3
         )
 
-    # HYG price level (for display) + 5-day % change: falling HYG = credit spreads
-    # widening = risk-off (investors dumping high-yield bonds)
+    # HYG price level (for display in market snapshot table; no longer used as
+    # a RORO vote — replaced by HY OAS spread below, which is the institutional
+    # standard and reads in basis points instead of dollar prices).
     if "hyg" in prices:
         signals["hyg_price"] = round(float(prices["hyg"].iloc[-1]), 2)
         if len(prices["hyg"]) >= 6:
             signals["hyg_5d_change"] = round(
                 float((prices["hyg"].iloc[-1] / prices["hyg"].iloc[-6] - 1) * 100), 3
             )
+
+    # HY OAS — ICE BofA US High Yield Option-Adjusted Spread (FRED daily).
+    # Direct credit-spread read in bp. Widening = risk-off (credit market
+    # pricing in higher default risk). Replaces HYG as the Layer 3 credit vote.
+    try:
+        hy_oas_series = fetch_fred_series("BAMLH0A0HYM2", periods=15).dropna()
+        if len(hy_oas_series) >= 6:
+            signals["hy_oas_current"]   = round(float(hy_oas_series.iloc[-1]), 2)
+            signals["hy_oas_5d_change"] = round(
+                float(hy_oas_series.iloc[-1] - hy_oas_series.iloc[-6]) * 100, 1
+            )   # in bp (FRED reports HY OAS in %, so multiply delta by 100)
+    except Exception:
+        pass
 
     # Gold/SPY ratio: current level + 5-day % change.
     # Rising ratio = gold outperforming equities = classic risk-off signature.

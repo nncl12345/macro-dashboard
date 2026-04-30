@@ -53,6 +53,8 @@ SIGNAL_WEIGHTS: dict[str, int] = {
     "PMI > 50":                   2,  # coincident (INDPRO is backward-looking)
     "LEI rising (MoM)":           3,  # leading (Conference Board composite)
     "Claims falling (4w MA)":     3,  # leading (weekly, high-frequency)
+    "Continuing claims falling":  2,  # coincident (slower-moving stock of unemployed)
+    "WEI accelerating":           3,  # leading (NY Fed weekly nowcast)
     "Bear steepener":             3,  # leading (market's forward growth view)
     # Inflation axis
     "CPI YoY accelerating":       2,  # coincident (reports last month's CPI)
@@ -64,7 +66,7 @@ SIGNAL_WEIGHTS: dict[str, int] = {
 
 # Max weighted total per axis, assuming every signal fires. Used by the UI
 # breakdown and the confidence calculation.
-MAX_GROWTH_SIGNALS    = 11  # 2 + 3 + 3 + 3
+MAX_GROWTH_SIGNALS    = 16  # 2 + 3 + 3 + 2 + 3 + 3  (added Continuing claims +2, WEI +3)
 MAX_INFLATION_SIGNALS = 13  # 2 + 2 + 3 + 3 + 3
 
 
@@ -206,6 +208,19 @@ def classify_regime(signals: dict[str, float]) -> RegimeResult:
     # Smoothed so we don't get whipsawed by holiday/seasonal noise.
     if _has(signals, "claims_trend_change"):
         growth_signals["Claims falling (4w MA)"] = signals["claims_trend_change"] < 0
+
+    # Signal: Are continuing claims (CCSA) trending down? Same 4w/4w smoothing
+    # as initial claims. Together with initial claims this forms a 2-vote
+    # labour basket — initial = inflow into unemployment, continuing = stock.
+    if _has(signals, "continuing_claims_trend_change"):
+        growth_signals["Continuing claims falling"] = signals["continuing_claims_trend_change"] < 0
+
+    # Signal: Is the NY Fed Weekly Economic Index accelerating vs its 4w avg?
+    # WEI is a 10-input composite scaled to look like real GDP growth — the
+    # cleanest real-time growth nowcast available for free. Weekly cadence
+    # complements monthly INDPRO and quarterly LEI.
+    if _has(signals, "wei_current", "wei_4w_avg"):
+        growth_signals["WEI accelerating"] = signals["wei_current"] > signals["wei_4w_avg"]
 
     # Signal: BEAR steepener? (spread widening AND 10y leg leading the move)
     # Distinguishes growth-positive bear steepener from recessionary bull steepener.
@@ -415,6 +430,25 @@ def classify_monetary_cycle(signals: dict[str, float]) -> MonetaryCycleResult:
     ff_12m_high   = signals["fed_funds_12m_high"]
     nfci          = signals["nfci"]
 
+    # --- Tier 1 additions (read with .get so missing data fails gracefully) ---
+    # Net liquidity 3m % change — quantity-of-money read. Rising = stealth
+    # easing (cash flooding the system) regardless of where Fed Funds sits.
+    net_liq_3m_chg = signals.get("net_liq_3m_change_pct", float("nan"))
+    # SOFR-IORB spread (bp). Positive >5bp = funding stress = override stance
+    # to Peak Tightening regardless of Fed Funds direction.
+    sofr_iorb_bp = signals.get("sofr_iorb_spread_bp", float("nan"))
+    # MOVE Index — Treasury vol. Above 12m avg = elevated rates uncertainty.
+    move_now    = signals.get("move_current", float("nan"))
+    move_12m    = signals.get("move_12m_avg", float("nan"))
+
+    def _is_num(x) -> bool:
+        return x is not None and isinstance(x, (int, float)) and x == x   # NaN-safe
+
+    move_elevated = _is_num(move_now) and _is_num(move_12m) and move_now > move_12m
+    net_liq_expanding   = _is_num(net_liq_3m_chg) and net_liq_3m_chg >  2.0   # >+2% in 3m
+    net_liq_contracting = _is_num(net_liq_3m_chg) and net_liq_3m_chg < -2.0   # <−2% in 3m
+    funding_stress = _is_num(sofr_iorb_bp) and sofr_iorb_bp > 5.0   # SOFR > IORB by 5bp+
+
     # --- Step 1: Direction ---
     # Fed Funds 6-month change tells us whether we're in a hiking or cutting cycle.
     # Small moves (< ±0.10%) are treated as "on hold" — the Fed hasn't moved meaningfully.
@@ -450,16 +484,39 @@ def classify_monetary_cycle(signals: dict[str, float]) -> MonetaryCycleResult:
         stance = "Early Easing"
     else:
         # On hold — classify by absolute rate level and financial conditions.
-        # On hold at high rates with tight conditions = effectively Peak Tightening.
-        # On hold at low rates with loose conditions = effectively Full Easing.
-        if ff_current >= CYCLE_THRESHOLDS["high_rate_level"] or nfci >= CYCLE_THRESHOLDS["nfci_tight"]:
+        # MOVE elevated counts as tight conditions alongside NFCI (rates-vol
+        # stress sits next to broad financial-conditions stress).
+        # Net liquidity is a *tilt*: stealth easing/tightening through the
+        # back door even while Fed Funds is unchanged.
+        tight_conditions = (
+            ff_current >= CYCLE_THRESHOLDS["high_rate_level"]
+            or nfci >= CYCLE_THRESHOLDS["nfci_tight"]
+            or move_elevated
+        )
+        loose_conditions = (
+            ff_current <= 1.0 or nfci <= CYCLE_THRESHOLDS["nfci_loose"]
+        )
+        if tight_conditions and not net_liq_expanding:
             stance = "Peak Tightening"
-        elif ff_current <= 1.0 or nfci <= CYCLE_THRESHOLDS["nfci_loose"]:
+        elif loose_conditions or net_liq_expanding:
+            # Either Fed dovish OR balance sheet expanding (stealth easing) →
+            # treat as Full Easing even if rates haven't moved
             stance = "Full Easing"
+        elif net_liq_contracting:
+            # Stealth tightening through QT / TGA refill while Fed on hold
+            stance = "Early Tightening"
         elif ff_6m_change > 0:
             stance = "Early Tightening"
         else:
             stance = "Early Easing"
+
+    # --- Funding stress hard override (SOFR > IORB) ---
+    # When the plumbing breaks, nothing else matters. Force Peak Tightening
+    # regardless of where Fed Funds sits — dealer balance sheets are full,
+    # Fed will likely intervene within days. Same gating-override pattern
+    # as the Sahm rule on Layer 1.
+    if funding_stress:
+        stance = "Peak Tightening"
 
     # Real yield direction — supporting context (not used in classification,
     # but stored in signals so the UI can show it in the breakdown)
@@ -474,6 +531,12 @@ def classify_monetary_cycle(signals: dict[str, float]) -> MonetaryCycleResult:
             "Gap from 12m high":    round(gap_from_peak, 2),
             "NFCI":                 nfci,
             "Real yield rising":    real_yield_rising,
+            # Tier 1 monetary additions
+            "Net liquidity 3m %":   net_liq_3m_chg if _is_num(net_liq_3m_chg) else "n/a",
+            "SOFR-IORB (bp)":       sofr_iorb_bp   if _is_num(sofr_iorb_bp)   else "n/a",
+            "MOVE":                 move_now       if _is_num(move_now)       else "n/a",
+            "MOVE elevated":        move_elevated,
+            "Funding stress":       funding_stress,
         },
     )
 
@@ -501,7 +564,7 @@ def classify_monetary_cycle(signals: dict[str, float]) -> MonetaryCycleResult:
 #   r1 — VIX 5-day change positive  (fear index rising → risk-off)
 #   r2 — DXY 5-day change positive  (USD strengthening → safe-haven bid)
 #   r3 — Gold/SPY ratio 5d rising   (gold outpacing equities → flight to safety)
-#   r4 — HYG 5-day change negative  (high-yield bonds falling → credit stress)
+#   r4 — HY OAS 5-day widening      (credit spreads blowing out → credit stress)
 #   r5 — EEM underperforming SPY    (EM selling off relative to US → de-risking)
 #
 # Required signal keys (from fetch_roro_signals() in data/fetcher.py):
@@ -551,10 +614,15 @@ def classify_roro(signals: dict[str, float]) -> RoroResult:
     # Ratio rising means gold is gaining ground on stocks.
     r3 = signals.get("gold_spy_ratio_5d_change", 0) > 0
 
-    # Signal 4: HYG (high-yield bond ETF) falling over 5 days?
-    # High-yield (junk) bonds are risk assets. When investors get nervous they
-    # sell HYG and buy Treasuries — credit spreads widen, HYG price drops.
-    r4 = signals.get("hyg_5d_change", 0) < 0
+    # Signal 4: HY OAS (option-adjusted spread) widening over 5 days?
+    # Direct read on credit-market risk appetite — when investors get nervous,
+    # they demand more spread to hold junk bonds vs. Treasuries. Replaces HYG
+    # price (which embeds duration noise); OAS is the institutional standard.
+    # Falls back to HYG-falling proxy if HY OAS data isn't available yet.
+    if "hy_oas_5d_change" in signals:
+        r4 = signals.get("hy_oas_5d_change", 0) > 0   # widening = risk-off
+    else:
+        r4 = signals.get("hyg_5d_change", 0) < 0
 
     # Signal 5: EM equities underperforming US equities over 5 days?
     # Emerging markets are the highest-beta risk assets globally. When risk
@@ -572,11 +640,20 @@ def classify_roro(signals: dict[str, float]) -> RoroResult:
 
     # Bundle each signal's numeric value and its vote together so the UI
     # can display both without re-deriving the direction logic.
+    # Choose label for credit signal based on which data source is live.
+    # HY OAS (bp) is the preferred read; HYG % change is the legacy fallback.
+    if "hy_oas_5d_change" in signals:
+        credit_label = "HY OAS 5d chg (bp)"
+        credit_value = round(signals.get("hy_oas_5d_change", float("nan")), 1)
+    else:
+        credit_label = "HYG 5d chg %"
+        credit_value = round(signals.get("hyg_5d_change", float("nan")), 2)
+
     _signal_data = {
         "VIX 5d chg (pts)":    (round(signals.get("vix_5d_change", float("nan")), 2),  r1),
         "DXY 5d chg %":        (round(signals.get("dxy_5d_change", float("nan")), 2),  r2),
         "Gold/SPY 5d chg %":   (round(signals.get("gold_spy_ratio_5d_change", float("nan")), 2), r3),
-        "HYG 5d chg %":        (round(signals.get("hyg_5d_change", float("nan")), 2),  r4),
+        credit_label:          (credit_value,  r4),
         "EEM vs SPY 5d %":     (round(signals.get("eem_vs_spy_5d", float("nan")), 2),  r5),
     }
 
