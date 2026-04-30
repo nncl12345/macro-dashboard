@@ -238,6 +238,64 @@ def _fmt_signal_val(signal_name: str, val: float) -> str:
     return f"{val:+.2f}"
 
 
+# Layer 2 signal types — leading vs coincident annotation. Layer 1 types are
+# derived from SIGNAL_WEIGHTS (3 = leading, 2 = coincident) so there's no
+# duplication; this dict only covers the monetary-cycle signals that don't
+# go through the weight-vote system. "Override" tags the gating signals.
+LAYER2_SIGNAL_TYPES: dict[str, str] = {
+    "Fed Funds current":    "coincident",
+    "6m change":            "coincident",
+    "Gap from 12m high":    "coincident",
+    "NFCI":                 "coincident",
+    "Real yield rising":    "coincident",
+    "Net liquidity 3m %":   "leading",   # quantity-of-money leads asset prices ~3m
+    "SOFR-IORB (bp)":       "override",  # gating stress signal
+    "MOVE":                 "coincident",
+    "MOVE elevated":        "coincident",
+    "Funding stress":       "override",
+}
+
+
+def _signal_type_tag(signal_name: str, layer: int) -> str:
+    """Return a small inline badge marking a signal as leading / coincident / override.
+
+    Layer 1 reads from the classifier's SIGNAL_WEIGHTS dict; Layer 2 reads from
+    LAYER2_SIGNAL_TYPES above. Empty string for any signal not explicitly mapped
+    so unknown signal names degrade silently rather than crashing.
+    """
+    from regime.classifier import SIGNAL_WEIGHTS
+
+    if layer == 1:
+        weight = SIGNAL_WEIGHTS.get(signal_name)
+        if weight == 3:
+            kind = "leading"
+        elif weight == 2:
+            kind = "coincident"
+        else:
+            return ""
+    elif layer == 2:
+        kind = LAYER2_SIGNAL_TYPES.get(signal_name, "")
+        if not kind:
+            return ""
+    else:
+        return ""
+
+    # Sage = leading (forward-looking, the signals you trust most), slate-blue =
+    # coincident (confirmation), terracotta = override (gating stress signal)
+    colour = {
+        "leading":    "#7a9b7e",
+        "coincident": "#6b8cae",
+        "override":   "#c9694d",
+    }[kind]
+    label = {"leading": "lead", "coincident": "coinc", "override": "override"}[kind]
+    return (
+        f'<span style="display:inline-block; font-size:0.62rem; font-weight:600;'
+        f' padding:0.05rem 0.4rem; margin-left:0.35rem; border-radius:3px;'
+        f' background-color:{colour}22; color:{colour}; border:1px solid {colour}55;'
+        f' font-family:\'JetBrains Mono\',monospace; vertical-align:middle;">{label}</span>'
+    )
+
+
 def _confidence_badge_html(confidence: str, votes_to_flip: int) -> str:
     """Small pill showing how fragile the regime call is (votes-to-flip)."""
     colour = {
@@ -485,6 +543,22 @@ st.plotly_chart(
 # =============================================================================
 
 with st.expander("Signal breakdown. What drove this regime classification?"):
+    # Legend for the leading/coincident/override badges that annotate each
+    # signal. Surfaces the hierarchy: leading signals are the ones you trust
+    # to turn first; coincident confirm the call; overrides are gating signals
+    # (Sahm, funding stress) that bypass the vote system entirely when they fire.
+    st.markdown(
+        '<div style="font-size:0.72rem; color:#8899aa; margin: 0 0 0.6rem;'
+        ' font-family:\'IBM Plex Sans\',sans-serif;">'
+        f'Signal type: {_signal_type_tag("LEI rising (MoM)", 1)}'
+        ' turns before the cycle does (surveys, forward-market prices, weekly'
+        f' claims) &nbsp;·&nbsp; {_signal_type_tag("PMI > 50", 1)}'
+        ' confirms what\'s already happening (realised output, lagged CPI)'
+        f' &nbsp;·&nbsp; {_signal_type_tag("Funding stress", 2)}'
+        ' gating signal that bypasses the vote system when it fires.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
     g_col, i_col, m_col, r_col = st.columns(4)
 
     live_g_vals, live_i_vals = _signal_values(macro_signals)
@@ -493,24 +567,27 @@ with st.expander("Signal breakdown. What drove this regime classification?"):
         st.markdown(f"**Layer 1 — Growth: {result.growth_score}/{result.growth_available} (thr {result.growth_threshold})**")
         for signal, fired in result.growth_signals.items():
             icon = "✅" if fired else "❌"
+            tag  = _signal_type_tag(signal, layer=1)
             val_str = _fmt_signal_val(signal, live_g_vals[signal])
-            st.markdown(f"{icon} {signal} `{val_str}`")
+            st.markdown(f"{icon} {signal} `{val_str}`{tag}", unsafe_allow_html=True)
 
     with i_col:
         st.markdown(f"**Layer 1 — Inflation: {result.inflation_score}/{result.inflation_available} (thr {result.inflation_threshold})**")
         for signal, fired in result.inflation_signals.items():
             icon = "✅" if fired else "❌"
+            tag  = _signal_type_tag(signal, layer=1)
             val_str = _fmt_signal_val(signal, live_i_vals[signal])
-            st.markdown(f"{icon} {signal} `{val_str}`")
+            st.markdown(f"{icon} {signal} `{val_str}`{tag}", unsafe_allow_html=True)
 
     with m_col:
         st.markdown(f"**Layer 2 — Monetary Cycle: {cycle_result.stance}**")
         for key, val in cycle_result.signals.items():
+            tag = _signal_type_tag(key, layer=2)
             if isinstance(val, bool):
                 icon = "✅" if val else "❌"
-                st.markdown(f"{icon} {key}")
+                st.markdown(f"{icon} {key}{tag}", unsafe_allow_html=True)
             else:
-                st.markdown(f"• {key}: **{val}**")
+                st.markdown(f"• {key}: **{val}**{tag}", unsafe_allow_html=True)
 
     with r_col:
         st.markdown(f"**Layer 3 — RORO: {roro_result.stance} ({roro_result.score}/5)**")
@@ -835,22 +912,25 @@ with res_breakdown_col:
     with bd_g:
         st.markdown(f"**Growth: {wi_result.growth_score}/{wi_result.growth_available} (thr {wi_result.growth_threshold})**")
         for signal, fired in wi_result.growth_signals.items():
+            tag = _signal_type_tag(signal, layer=1)
             val_str = _fmt_signal_val(signal, wi_g_vals[signal])
-            st.markdown(f"{'✅' if fired else '❌'} {signal} `{val_str}`")
+            st.markdown(f"{'✅' if fired else '❌'} {signal} `{val_str}`{tag}", unsafe_allow_html=True)
 
     with bd_i:
         st.markdown(f"**Inflation: {wi_result.inflation_score}/{wi_result.inflation_available} (thr {wi_result.inflation_threshold})**")
         for signal, fired in wi_result.inflation_signals.items():
+            tag = _signal_type_tag(signal, layer=1)
             val_str = _fmt_signal_val(signal, wi_i_vals[signal])
-            st.markdown(f"{'✅' if fired else '❌'} {signal} `{val_str}`")
+            st.markdown(f"{'✅' if fired else '❌'} {signal} `{val_str}`{tag}", unsafe_allow_html=True)
 
     with bd_m:
         st.markdown(f"**Monetary: {wi_cycle_result.stance}**")
         for key, val in wi_cycle_result.signals.items():
+            tag = _signal_type_tag(key, layer=2)
             if isinstance(val, bool):
-                st.markdown(f"{'✅' if val else '❌'} {key}")
+                st.markdown(f"{'✅' if val else '❌'} {key}{tag}", unsafe_allow_html=True)
             else:
-                st.markdown(f"• {key}: **{val}**")
+                st.markdown(f"• {key}: **{val}**{tag}", unsafe_allow_html=True)
 
     with bd_r:
         st.markdown(f"**RORO: {wi_roro_result.stance} ({wi_roro_result.score}/5)**")
@@ -909,20 +989,37 @@ rewards early-warning signals without letting a single leader masquerade as
 a full axis verdict. Weighted tallies cross a majority threshold; axis above
 = "up", below = "down". The two axis verdicts pick the quadrant.
 
-**Growth signals — weighted max 11:** PMI proxy (INDPRO-derived) > 50 *(coincident, 2)*;
-Conference Board LEI rising MoM *(leading, 3)*; initial claims 4-week trend
-falling *(leading, 3)*; bear steepener (10y–2y spread widening *and* 10y
-leading) *(leading, 3)*.
+**Growth signals — weighted max 19, threshold 9.** Seven votes covering output,
+labour (inflow + stock), business capex intent, and the bond market's read on
+forward growth:
 
-**Inflation signals — weighted max 13:** headline CPI YoY accelerating vs 3m ago
-*(coincident, 2)*; core CPI YoY accelerating vs 3m ago *(coincident, 2)*; PPI
-rising MoM *(leading, 3)*; 5Y5Y breakevens rising vs 3m ago *(leading, 3)*;
-Michigan 1Y expectations > 3% *(leading, 3)*.
+- PMI proxy (INDPRO-derived) > 50 — *coincident, 2*
+- Conference Board LEI rising MoM — *leading, 3*
+- Initial claims 4-week trend falling — *leading, 3*
+- Continuing claims 4-week trend falling — *coincident, 2*
+- WEI accelerating vs 4-week MA *(NY Fed weekly nowcast)* — *leading, 3*
+- Core capex orders (NEWORDER ex-defence/aircraft) rising 3m — *leading, 3*
+- Bear steepener (10y–2y spread widening *and* 10y leading) — *leading, 3*
+
+INDPRO and continuing claims are the two coincident anchors (realised
+production, stock of unemployed). The other five all turn before the cycle
+does. Adding NEWORDER alongside INDPRO is deliberate: INDPRO captures the PMI
+*production* sub-index (what factories are making now), NEWORDER captures the
+PMI *new-orders* sub-index (the order book backing what they'll make next).
+
+**Inflation signals — weighted max 13, threshold 6.** Five votes covering both
+the level/trajectory of realised CPI and the market/survey expectation of
+where it goes next:
+
+- Headline CPI YoY accelerating vs 3m ago — *coincident, 2*
+- Core CPI YoY accelerating vs 3m ago — *coincident, 2*
+- PPI rising MoM — *leading, 3*
+- 5Y5Y forward breakevens rising vs 3m ago — *leading, 3*
+- Michigan 1Y inflation expectations > 3% — *leading, 3*
 
 **Threshold:** `floor(weighted_max / 2)` — sits just under 50% of the available
-weighted max (5 for growth, 6 for inflation on the full signal set). Rescales
-to available signals so pre-2003 backtests don't fake TIPS data that didn't
-exist yet.
+weighted max. Rescales to *available* signals so pre-2003 backtests don't fake
+TIPS data that didn't exist yet, and pre-1992 backtests don't fake NEWORDER.
 
 **Two hard overrides (v3):**
 
@@ -954,25 +1051,42 @@ environment and the discount rate on every risk asset. Four stances:
   First cuts just delivered.
 - **Full Easing.** Multiple cuts in, rate well below 12m peak. Accommodative.
 
-**Logic.** Look at the 6-month Fed Funds change first to get direction
-(hiking, cutting, on hold). Then use distance from the 12-month high to
-decide stage within that direction. If on hold, classify by the absolute rate
-level and Chicago Fed NFCI. Tight conditions imply Peak Tightening, loose
-imply Full Easing.
+**Primary logic.** Look at the 6-month Fed Funds change first to get direction
+(hiking, cutting, on hold). Then use distance from the 12-month high to decide
+stage within that direction. If on hold, classify by absolute rate level,
+Chicago Fed NFCI, and MOVE Index (Treasury vol). Tight conditions imply Peak
+Tightening; loose imply Full Easing.
 
-**Why it matters for Layer 1.** The same quadrant feels completely different
-depending on the monetary stance:
+**The Fed Funds rate is the price of money. Net liquidity is the quantity.**
+Two signals can drag the stance away from where Fed Funds alone would put it:
 
-- **Overheating + Peak Tightening** is 2022. Brutal for everything, the Fed
-  can't rescue anything.
-- **Goldilocks + Full Easing** is 1995 and 2019. Best-case: disinflation with
-  a cut tailwind.
-- **Stagflation + Peak Tightening** is the worst combination. The Fed can't
-  ease, so everything reprices lower.
+- **Net liquidity 3m % change** *(leading)* — Fed balance sheet minus Treasury
+  General Account minus Reverse Repo. Captures how much cash is actually
+  circulating in the financial system bidding up assets. If Fed is on hold but
+  net liquidity is expanding ≥2% over 3m, classify as **Full Easing** — that's
+  stealth easing through TGA drawdown or QT slowdown (early 2023 is the
+  textbook case). If contracting ≤−2%, **Early Tightening** even without rate
+  hikes. Bypasses the rate-only view that misses balance-sheet mechanics.
+- **MOVE Index** *(coincident)* — Treasury vol, the rates-market equivalent of
+  VIX. When MOVE is above its 12m average, financial conditions count as tight
+  alongside NFCI. Bond-market stress shows up here before equity vol moves.
 
-**Supporting signal.** 10y real yield direction (3-month change in TIPS yield).
-Rising reals confirm a tightening impulse. Falling reals confirm easing. Shown
-in the breakdown but not used in the classification itself.
+**Funding-stress override.** SOFR > IORB by more than 5bp forces the stance to
+**Peak Tightening** regardless of Fed Funds, regardless of net liquidity. Same
+gating pattern as the Sahm rule on Layer 1 — most of the time it's silent, but
+when SOFR pushes above the risk-free ceiling it means dealer balance sheets
+are full and the plumbing is breaking. September 2019 repo crisis fired this.
+
+**Why it matters for Layer 1.** Same quadrant, different monetary stance:
+
+- **Overheating + Peak Tightening** is 2022. Brutal — Fed can't rescue anything.
+- **Goldilocks + Full Easing** is 1995, 2019. Best-case disinflation with a
+  cut tailwind.
+- **Stagflation + Peak Tightening** is the worst combination — Fed can't ease.
+
+**Supporting signal.** 10y real yield 3-month change. Rising reals confirm a
+tightening impulse, falling reals confirm easing. Shown in the breakdown but
+not used in the classification itself.
 """
     )
 
@@ -988,7 +1102,11 @@ safety right now. Three stances: **Risk-On**, **Neutral**, **Risk-Off**.
 - **VIX 5d change positive.** Fear index rising, investors buying protection.
 - **DXY 5d change positive.** USD safe-haven bid, global de-risking.
 - **Gold/SPY ratio 5d rising.** Gold outpacing equities, flight to safety.
-- **HYG 5d change negative.** High-yield bonds falling, credit stress.
+- **HY OAS 5d widening *(bp)*.** Credit spreads blowing out, junk bonds
+  pricing in higher default risk. Replaces the old HYG-price signal — option-
+  adjusted spread is the institutional standard, reads in basis points
+  rather than dollar prices, and strips out duration noise. Falls back to
+  HYG-falling proxy if OAS data is missing.
 - **EEM vs SPY 5d negative.** EM underperforming US, risk appetite fading.
 
 **Thresholds.** ≥3 votes is Risk-Off, 2 is Neutral, ≤1 is Risk-On.
