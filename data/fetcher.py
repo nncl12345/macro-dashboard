@@ -44,6 +44,9 @@ FRED_SERIES: dict[str, str] = {
     "lei":              "USSLIND",   # Conference Board Leading Economic Index
     "retail_sales":     "RSXFS",     # Retail Sales ex Food Services (consumer demand)
     "wei":              "WEI",       # NY Fed Weekly Economic Index (real-time GDP nowcast)
+    "new_orders":       "NEWORDER",  # Core capital goods orders (ex defence, ex aircraft)
+                                     # — leading-side complement to INDPRO; INDPRO captures
+                                     # production, NEWORDER captures the order book behind it.
 
     # --- Net liquidity (Fed balance-sheet quantity-of-money read) ---
     "walcl":            "WALCL",     # Fed total assets (weekly H.4.1, $M)
@@ -254,6 +257,22 @@ def fetch_macro_inputs() -> dict[str, float]:
     cc_4w_prev  = float(cc.iloc[-8:-4].mean())
     continuing_claims_trend_change = round(cc_4w_now - cc_4w_prev, 0)
 
+    # --- Core capital goods orders (NEWORDER) — 3-month % change ---
+    # The most forward-looking macro signal that's free and FRED-native.
+    # NEWORDER = Manufacturers' New Orders for Nondefense Capital Goods
+    # excluding aircraft. Strips out the noisy bits (Boeing one-offs, defence
+    # spending) and leaves you with what businesses are actually committing to
+    # spend on equipment. This is the institutional read on capex intent.
+    #
+    # Why both this AND INDPRO: INDPRO captures realised production; NEWORDER
+    # captures the order book backing the next quarter of production. INDPRO
+    # is a proxy for the PMI *production* sub-index; NEWORDER fills the
+    # *new orders* sub-index gap that INDPRO doesn't see.
+    #
+    # 3-month % change to filter single-month noise (NEWORDER is volatile MoM).
+    no = fetch_fred_series("NEWORDER", periods=8)
+    new_orders_3m_chg_pct = round(float(no.pct_change(3).dropna().iloc[-1] * 100), 2)
+
     # --- WEI (Weekly Economic Index, NY Fed) ---
     # Composite of 10 weekly indicators (claims, retail, fuel, payroll tax,
     # steel, etc.) scaled to look like real GDP growth. Real-time nowcast —
@@ -445,6 +464,7 @@ def fetch_macro_inputs() -> dict[str, float]:
         "lei_mom":             lei_mom,
         "claims_trend_change": claims_trend_change,
         "continuing_claims_trend_change": continuing_claims_trend_change,
+        "new_orders_3m_chg_pct": new_orders_3m_chg_pct,
         "wei_current":         wei_current,
         "wei_4w_avg":          wei_4w_avg,
         "spread_10y2y_change": spread_10y2y_change,

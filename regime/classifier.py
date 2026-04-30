@@ -55,6 +55,7 @@ SIGNAL_WEIGHTS: dict[str, int] = {
     "Claims falling (4w MA)":     3,  # leading (weekly, high-frequency)
     "Continuing claims falling":  2,  # coincident (slower-moving stock of unemployed)
     "WEI accelerating":           3,  # leading (NY Fed weekly nowcast)
+    "Core capex orders rising":   3,  # leading (NEWORDER — capex intent, leads PMI new orders sub-index)
     "Bear steepener":             3,  # leading (market's forward growth view)
     # Inflation axis
     "CPI YoY accelerating":       2,  # coincident (reports last month's CPI)
@@ -66,7 +67,7 @@ SIGNAL_WEIGHTS: dict[str, int] = {
 
 # Max weighted total per axis, assuming every signal fires. Used by the UI
 # breakdown and the confidence calculation.
-MAX_GROWTH_SIGNALS    = 16  # 2 + 3 + 3 + 2 + 3 + 3  (added Continuing claims +2, WEI +3)
+MAX_GROWTH_SIGNALS    = 19  # 2 + 3 + 3 + 2 + 3 + 3 + 3  (+ Core capex orders)
 MAX_INFLATION_SIGNALS = 13  # 2 + 2 + 3 + 3 + 3
 
 
@@ -221,6 +222,13 @@ def classify_regime(signals: dict[str, float]) -> RegimeResult:
     # complements monthly INDPRO and quarterly LEI.
     if _has(signals, "wei_current", "wei_4w_avg"):
         growth_signals["WEI accelerating"] = signals["wei_current"] > signals["wei_4w_avg"]
+
+    # Signal: Core capital goods orders (NEWORDER) accelerating over 3 months?
+    # NEWORDER ex-defence/aircraft is the institutional capex-intent read —
+    # leads PMI new-orders sub-index, leads INDPRO by 1-2 quarters.
+    # Complements INDPRO (production) by capturing the order book behind it.
+    if _has(signals, "new_orders_3m_chg_pct"):
+        growth_signals["Core capex orders rising"] = signals["new_orders_3m_chg_pct"] > 0
 
     # Signal: BEAR steepener? (spread widening AND 10y leg leading the move)
     # Distinguishes growth-positive bear steepener from recessionary bull steepener.
