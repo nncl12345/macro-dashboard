@@ -202,12 +202,16 @@ def _signal_values(signals: dict) -> tuple[dict, dict]:
     because the sign of the delta is what the classifier actually checks.
     """
     growth = {
-        "PMI > 50":               signals["pmi_proxy"],
-        "LEI rising (MoM)":       signals["lei_mom"],
-        "Claims falling (4w MA)": signals["claims_trend_change"],
+        "PMI > 50":                  signals["pmi_proxy"],
+        "LEI rising (MoM)":          signals["lei_mom"],
+        "Claims falling (4w MA)":    signals["claims_trend_change"],
+        "Continuing claims falling": signals.get("continuing_claims_trend_change", float("nan")),
+        # WEI signal: display the gap to its 4w avg (positive = accelerating)
+        "WEI accelerating":          signals.get("wei_current", float("nan")) - signals.get("wei_4w_avg", float("nan")),
+        "Core capex orders rising":  signals.get("new_orders_3m_chg_pct", float("nan")),
         # Bear steepener = spread widened AND 10y rose; display the 10y move
         # as the most informative single number behind the vote.
-        "Bear steepener":         signals["yield_10y_change"],
+        "Bear steepener":            signals["yield_10y_change"],
     }
     inflation = {
         "CPI YoY accelerating":      signals["cpi_yoy"] - signals["cpi_yoy_lag"],
@@ -229,7 +233,7 @@ def _fmt_signal_val(signal_name: str, val: float) -> str:
     absolute_signals = {"PMI > 50", "Michigan exp > 3%"}
     if signal_name in absolute_signals:
         return f"{val:.1f}"
-    if signal_name == "Claims falling (4w MA)":
+    if signal_name in ("Claims falling (4w MA)", "Continuing claims falling"):
         return f"{val:+,.0f}"
     return f"{val:+.2f}"
 
